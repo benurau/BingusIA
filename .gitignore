@@ -6,3 +6,4 @@ __pycache__/
 .bingus_memory/
 memory_store/
 {{workspace_dir}}/
+bingus_ia_config.json
