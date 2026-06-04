@@ -1,0 +1,12 @@
+{
+  "provider": "ollama",
+  "ollama_base_url": "http://localhost:11434",
+  "model": "codellama:7b",
+  "api_key": "",
+  "api_base_url": "",
+  "workspace_dir": ".",
+  "max_turns": 25,
+  "memory_enabled": true,
+  "injection_dir": "injections",
+  "embedding_model": "nomic-embed-text"
+}
