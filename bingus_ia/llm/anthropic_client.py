@@ -76,7 +76,7 @@ class AnthropicClient(BaseLLMClient):
         payload: dict = {
             "model": self.model,
             "messages": converted,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
         }
         if system:
             payload["system"] = system

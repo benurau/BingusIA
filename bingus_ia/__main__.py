@@ -169,6 +169,13 @@ async def main():
                 result = agent.set_workspace(path)
                 print(f"  {result.output}")
                 continue
+            if prompt.strip() == "/rehearse":
+                print("Running rehearsal...")
+                print("  Scanning project, searching the web, and creating knowledge injection.")
+                result = await agent.rehearse()
+                print(result)
+                continue
+
             if prompt.strip() == "/memory":
                 print(agent.blocks.list_blocks().output)
                 continue

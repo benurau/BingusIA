@@ -40,6 +40,18 @@ class WebSearch:
         except Exception as e:
             return ToolResult(ToolName.WEB_FETCH, False, "", error=str(e))
 
+    def fetch_html(self, url: str) -> ToolResult:
+        try:
+            resp = self._http.get(url)
+            resp.raise_for_status()
+            text = re.sub(r"<script[^>]*>.*?</script>", "", resp.text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+            if not text.strip():
+                return ToolResult(ToolName.WEB_FETCH, True, f"URL: {url}\n\n[No HTML content found]")
+            return ToolResult(ToolName.WEB_FETCH, True, f"URL: {url}\n\n{text[:8000]}")
+        except Exception as e:
+            return ToolResult(ToolName.WEB_FETCH, False, "", error=str(e))
+
     def _extract_text(self, html: str) -> str:
         text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)

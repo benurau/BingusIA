@@ -78,7 +78,7 @@ class AgentConfig:
     api_key: str = ""
     api_base_url: str = ""
     workspace_dir: str = "."
-    max_turns: int = 25
+    max_turns: int = 100
     memory_enabled: bool = True
     injection_dir: str = "injections"
     embedding_model: str = "nomic-embed-text"

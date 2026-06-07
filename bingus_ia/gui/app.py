@@ -1,241 +1,166 @@
 import asyncio
+import io
 import os
 import queue
+import re
+import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
+from enum import Enum
 from pathlib import Path
 
 from bingus_ia.core.agent import Agent
 from bingus_ia.core.config import load_config, save_config
-from bingus_ia.core.types import AgentConfig, Role
+from bingus_ia.core.types import AgentConfig, ToolResult, ToolName
 
 
-BG = "#1e1e1e"
-BG2 = "#252526"
-FG = "#cccccc"
-FG2 = "#969696"
-INPUT_BG = "#3c3c3c"
+# ── Windows Terminal classic colors ───────────────────────────────
+TERM_BG = "#000000"
+TERM_FG = "#c0c0c0"
+TERM_BOLD = "#ffffff"
+TERM_PROMPT = "#569CD6"
+TERM_AGENT = "#6A9955"
+TERM_ERROR = "#F44747"
+TERM_INFO = "#969696"
+TERM_SEP = "#333333"
+TERM_INPUT_BG = "#000000"
+TERM_ACCENT = "#007acc"
+
+# ── Editor / Explorer colors ──────────────────────────────────────
+EDITOR_BG = "#1e1e1e"
+EDITOR_FG = "#d4d4d4"
+HEADER_BG = "#252526"
+EXPLORER_BG = "#252526"
 SEL_BG = "#264f78"
-ACCENT = "#007acc"
-BORDER = "#3c3c3c"
 SCROLL_BG = "#1e1e1e"
 SCROLL_FG = "#424242"
-TERMINAL_BG = "#1e1e1e"
-EDITOR_BG = "#1e1e1e"
-LINENUM_BG = "#252526"
+SCROLL_THUMB = "#424242"
+SCROLL_THUMB_ACTIVE = "#555555"
 
 
-def apply_theme(widget):
-    for child in widget.winfo_children():
-        cls = child.winfo_class()
-        if cls == "Frame":
-            child.configure(bg=BG)
-        elif cls == "Label":
-            child.configure(bg=BG, fg=FG)
-        elif cls == "Button":
-            child.configure(bg=BG2, fg=FG, activebackground=BG,
-                            activeforeground=FG, relief=tk.FLAT,
-                            bd=1, highlightbackground=BORDER)
-        elif cls == "Entry":
-            child.configure(bg=INPUT_BG, fg=FG, insertbackground=FG,
-                            relief=tk.FLAT, bd=1, highlightbackground=BORDER,
-                            highlightcolor=ACCENT)
-        elif cls == "Text" or cls == "ScrolledText":
-            child.configure(bg=EDITOR_BG, fg=FG, insertbackground=FG,
-                            selectbackground=SEL_BG, relief=tk.FLAT, bd=1)
-        elif cls == "PanedWindow":
-            child.configure(bg=BG2, sashrelief=tk.FLAT, sashwidth=3)
-        elif cls == "Listbox":
-            child.configure(bg=INPUT_BG, fg=FG, selectbackground=SEL_BG,
-                            relief=tk.FLAT, bd=1)
-        elif cls == "Checkbutton":
-            child.configure(bg=BG, fg=FG, selectcolor=BG2,
-                            activebackground=BG, activeforeground=FG)
-        apply_theme(child)
+class AutoHideScrollbar(tk.Scrollbar):
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, bg=SCROLL_BG, troughcolor=SCROLL_BG,
+                         activebackground=SCROLL_THUMB_ACTIVE, elementborderwidth=0,
+                         width=10, **kwargs)
 
-
-def apply_theme_to_window(widget):
-    widget.configure(bg=BG)
-    apply_theme(widget)
-
-
-class StartupDialog(tk.Toplevel):
-    def __init__(self, parent: tk.Tk):
-        super().__init__(parent)
-        self.title("Bingus IA — Setup")
-        self.geometry("520x480")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-        self.configure(bg=BG)
-
-        self.result: AgentConfig | None = None
-
-        frame = tk.Frame(self, bg=BG, padx=24, pady=20)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        tk.Label(frame, text="Bingus IA Setup", font=("Segoe UI", 16, "bold"),
-                 bg=BG, fg=FG).pack(anchor="w", pady=(0, 20))
-
-        tk.Label(frame, text="Provider", font=("Segoe UI", 10),
-                 bg=BG, fg=FG2, anchor="w").pack(fill=tk.X)
-        self.provider_var = tk.StringVar(value="ollama")
-        provider_menu = ttk.Combobox(frame, textvariable=self.provider_var,
-                                     values=["ollama", "openai", "anthropic", "opencode"],
-                                     state="readonly", font=("Segoe UI", 10))
-        provider_menu.pack(fill=tk.X, pady=(2, 12))
-        provider_menu.bind("<<ComboboxSelected>>", self._on_provider_change)
-
-        self.fields_frame = tk.Frame(frame, bg=BG)
-        self.fields_frame.pack(fill=tk.X)
-
-        tk.Label(frame, text="Model", font=("Segoe UI", 10),
-                 bg=BG, fg=FG2, anchor="w").pack(fill=tk.X, pady=(12, 0))
-        self.model_var = tk.StringVar(value="codellama:7b")
-        tk.Entry(frame, textvariable=self.model_var, font=("Consolas", 10),
-                 bg=INPUT_BG, fg=FG, insertbackground=FG, relief=tk.FLAT,
-                 highlightbackground=BORDER, highlightcolor=ACCENT).pack(fill=tk.X, pady=(2, 12))
-
-        btn_frame = tk.Frame(frame, bg=BG)
-        btn_frame.pack(fill=tk.X, pady=(16, 0))
-
-        tk.Button(btn_frame, text="Start", command=self._on_start,
-                  font=("Segoe UI", 10, "bold"), bg=ACCENT, fg="white",
-                  activebackground="#005999", activeforeground="white",
-                  relief=tk.FLAT, padx=20, pady=4, cursor="hand2").pack(side=tk.RIGHT)
-
-        tk.Button(btn_frame, text="Cancel", command=self.destroy,
-                  font=("Segoe UI", 10), bg=BG2, fg=FG,
-                  activebackground=BG, activeforeground=FG,
-                  relief=tk.FLAT, padx=16, pady=4).pack(side=tk.RIGHT, padx=(0, 8))
-
-        self._on_provider_change()
-
-    def _clear_fields(self):
-        for w in self.fields_frame.winfo_children():
-            w.destroy()
-
-    def _on_provider_change(self, event=None):
-        self._clear_fields()
-        provider = self.provider_var.get()
-        if provider == "ollama":
-            self._build_ollama_fields()
-        elif provider == "opencode":
-            self._build_api_fields("https://opencode.ai/zen/v1", "big-pickle")
-        elif provider == "openai":
-            self._build_api_fields("https://api.openai.com/v1", "gpt-4o")
-        elif provider == "anthropic":
-            self._build_api_fields("https://api.anthropic.com/v1", "claude-sonnet-4-20250514")
-
-    def _build_ollama_fields(self):
-        self._ollama_url_var = tk.StringVar(value="http://localhost:11434")
-        self._add_field("Ollama URL", self._ollama_url_var, "http://localhost:11434")
-        tk.Button(self.fields_frame, text="Fetch Models",
-                  command=self._fetch_ollama_models,
-                  font=("Segoe UI", 9), bg=BG2, fg=FG,
-                  activebackground=BG, activeforeground=FG,
-                  relief=tk.FLAT).pack(anchor="w", pady=(4, 0))
-        self._model_list_var = tk.StringVar()
-        self._model_list = tk.Listbox(self.fields_frame, height=5,
-                                       font=("Consolas", 9), bg=INPUT_BG,
-                                       fg=FG, selectbackground=SEL_BG,
-                                       relief=tk.FLAT, highlightbackground=BORDER)
-        self._model_list.pack(fill=tk.X, pady=(6, 0))
-        self._model_list.bind("<<ListboxSelect>>", self._on_model_select)
-
-    def _build_api_fields(self, default_url: str, default_model: str):
-        self._api_url_var = tk.StringVar(value=default_url)
-        self._api_key_var = tk.StringVar(value="")
-        self._add_field("API Base URL", self._api_url_var, default_url)
-        self._add_field("API Key", self._api_key_var, "sk-...")
-        self.model_var.set(default_model)
-
-    def _add_field(self, label: str, var: tk.StringVar, placeholder: str):
-        row = tk.Frame(self.fields_frame, bg=BG)
-        row.pack(fill=tk.X, pady=(6, 0))
-        tk.Label(row, text=label, font=("Segoe UI", 9),
-                 bg=BG, fg=FG2, width=14, anchor="w").pack(side=tk.LEFT)
-        tk.Entry(row, textvariable=var, font=("Consolas", 9),
-                 bg=INPUT_BG, fg=FG, insertbackground=FG,
-                 relief=tk.FLAT, highlightbackground=BORDER,
-                 highlightcolor=ACCENT).pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-    def _fetch_ollama_models(self):
-        url = self._ollama_url_var.get().strip()
-        if not url:
-            return
-        self._model_list.delete(0, tk.END)
-        self._model_list.insert(tk.END, "Loading...")
-        threading.Thread(target=self._do_fetch_models, args=(url,),
-                         daemon=True).start()
-
-    def _do_fetch_models(self, url: str):
-        try:
-            import httpx
-            resp = httpx.get(f"{url.rstrip('/')}/api/tags", timeout=10)
-            if resp.status_code == 200:
-                models = resp.json().get("models", [])
-                names = [m.get("name", m.get("model", "")) for m in models]
-                names = [n for n in names if n]
-                self.after(0, self._populate_model_list, names)
-            else:
-                self.after(0, self._populate_model_list, [])
-        except Exception as e:
-            self.after(0, self._populate_model_list, [], str(e))
-
-    def _populate_model_list(self, names: list[str], error: str = ""):
-        self._model_list.delete(0, tk.END)
-        if error:
-            self._model_list.insert(tk.END, f"Error: {error}")
-            return
-        if not names:
-            self._model_list.insert(tk.END, "No models found")
-            return
-        for n in names:
-            self._model_list.insert(tk.END, n)
-
-    def _on_model_select(self, event=None):
-        sel = self._model_list.curselection()
-        if sel:
-            self.model_var.set(self._model_list.get(sel[0]))
-
-    def _on_start(self):
-        provider = self.provider_var.get()
-        model = self.model_var.get().strip()
-
-        cfg = AgentConfig()
-        cfg.provider = provider
-        cfg.model = model
-
-        if provider == "ollama":
-            url = getattr(self, "_ollama_url_var", tk.StringVar()).get().strip()
-            if url:
-                cfg.ollama_base_url = url
+    def set(self, lo, hi):
+        if float(lo) <= 0.0 and float(hi) >= 1.0:
+            self.pack_forget()
         else:
-            key = getattr(self, "_api_key_var", tk.StringVar()).get().strip()
-            if key:
-                cfg.api_key = key
-            url = getattr(self, "_api_url_var", tk.StringVar()).get().strip()
-            if url:
-                cfg.api_base_url = url
+            try:
+                self.pack(side=tk.RIGHT, fill=tk.Y)
+            except tk.TclError:
+                pass
+        super().set(lo, hi)
 
-        if not cfg.model:
-            messagebox.showerror("Error", "Please select a model", parent=self)
-            return
-
-        if provider != "ollama" and not cfg.api_key:
-            if not messagebox.askyesno("No API Key",
-                                       "No API key provided. Continue anyway?",
-                                       parent=self):
-                return
-
-        self.result = cfg
-        save_config(cfg)
-        self.destroy()
+# ── Syntax highlight colors ───────────────────────────────────────
+SYNTAX_KEYWORD = "#569CD6"
+SYNTAX_STRING = "#CE9178"
+SYNTAX_COMMENT = "#6A9955"
+SYNTAX_NUMBER = "#B5CEA8"
+SYNTAX_BUILTIN = "#DCDCAA"
+SYNTAX_DECORATOR = "#C586C0"
+SYNTAX_FUNC = "#DCDCAA"
 
 
+class SetupState(Enum):
+    PROVIDER = 0
+    OLLAMA_URL = 1
+    OLLAMA_MODEL = 2
+    API_KEY = 3
+    API_BASE_URL = 4
+    MODEL_NAME = 5
+    DONE = 6
+
+
+PROVIDER_NAMES = ["ollama", "openai", "anthropic", "opencode"]
+
+PY_KEYWORDS = (
+    "False|None|True|and|as|assert|async|await|break|class|continue|def|del|"
+    "elif|else|except|finally|for|from|global|if|import|in|is|lambda|"
+    "nonlocal|not|or|pass|raise|return|try|while|with|yield"
+)
+
+PY_BUILTINS = (
+    "print|len|range|int|str|float|list|dict|tuple|set|bool|type|"
+    "isinstance|hasattr|getattr|setattr|delattr|open|file|input|"
+    "super|object|property|staticmethod|classmethod|"
+    "enumerate|zip|map|filter|sorted|reversed|"
+    "min|max|sum|abs|round|any|all|repr|"
+    "Exception|ValueError|TypeError|KeyError|IndexError|AttributeError|"
+    "RuntimeError|OSError|ImportError|NameError|SyntaxError|"
+    "BaseException|SystemExit|KeyboardInterrupt"
+)
+
+HIGHLIGHT_RULES: list[tuple[str, str, str]] = [
+    (r"#[^\n]*", SYNTAX_COMMENT, "comment"),
+    (r"\"\"\"[\s\S]*?\"\"\"", SYNTAX_STRING, "docstring"),
+    (r"'''.*?'''", SYNTAX_STRING, "docstring"),
+    (r"\"[^\"\n]*\"", SYNTAX_STRING, "string"),
+    (r"'[^'\n]*'", SYNTAX_STRING, "string"),
+    (r"f\"[^\"\n]*\"", SYNTAX_STRING, "fstring"),
+    (r"f'[^'\n]*'", SYNTAX_STRING, "fstring"),
+    (r"\b\d+\.?\d*\b", SYNTAX_NUMBER, "number"),
+    (r"\b(" + PY_KEYWORDS + r")\b", SYNTAX_KEYWORD, "keyword"),
+    (r"\b(" + PY_BUILTINS + r")\b", SYNTAX_BUILTIN, "builtin"),
+    (r"@\w+", SYNTAX_DECORATOR, "decorator"),
+]
+
+HIGHLIGHT_TAGS = {
+    "keyword": SYNTAX_KEYWORD,
+    "builtin": SYNTAX_BUILTIN,
+    "string": SYNTAX_STRING,
+    "comment": SYNTAX_COMMENT,
+    "number": SYNTAX_NUMBER,
+    "decorator": SYNTAX_DECORATOR,
+    "docstring": SYNTAX_STRING,
+    "fstring": SYNTAX_STRING,
+    "func": SYNTAX_FUNC,
+}
+
+
+def _run_ollama_fetch(url: str) -> list[str]:
+    import httpx
+    try:
+        resp = httpx.get(f"{url.rstrip('/')}/api/tags", timeout=10)
+        if resp.status_code == 200:
+            models = resp.json().get("models", [])
+            names = [m.get("name", m.get("model", "")) for m in models]
+            return [n for n in names if n]
+    except Exception:
+        pass
+    return []
+
+
+def _highlight_python(text: str) -> list[tuple[str, str]]:
+    spans: list[tuple[int, int, str]] = []
+    for pattern, color, tag in HIGHLIGHT_RULES:
+        for m in re.finditer(pattern, text):
+            spans.append((m.start(), m.end(), tag))
+    spans.sort(key=lambda x: (x[0], -x[1]))
+
+    merged: list[tuple[int, int, str]] = []
+    for start, end, tag in spans:
+        if merged and start < merged[-1][1]:
+            continue
+        merged.append((start, end, tag))
+
+    result: list[tuple[str, str]] = []
+    pos = 0
+    for start, end, tag in merged:
+        if start > pos:
+            result.append((text[pos:start], ""))
+        result.append((text[start:end], tag))
+        pos = end
+    if pos < len(text):
+        result.append((text[pos:], ""))
+    return result
+
+
+# ── AgentRunner ────────────────────────────────────────────────────
 class AgentRunner:
     def __init__(self, config: AgentConfig):
         self.config = config
@@ -251,10 +176,18 @@ class AgentRunner:
     def _run_loop(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        sys.stdout = stdout_buf
+        sys.stderr = stderr_buf
         try:
             self.agent = Agent(self.config)
             self.output_queue.put(("ready", ""))
         except Exception as e:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
             self.output_queue.put(("error", f"Agent init failed: {e}"))
             return
         while self._running:
@@ -263,13 +196,39 @@ class AgentRunner:
                 if prompt is None:
                     break
                 result = self._loop.run_until_complete(self.agent.run(prompt))
+                out_output = self._strip_ansi(stdout_buf.getvalue())
+                stdout_buf.truncate(0)
+                stdout_buf.seek(0)
+                err_output = stderr_buf.getvalue()
+                stderr_buf.truncate(0)
+                stderr_buf.seek(0)
+                if out_output.strip():
+                    self.output_queue.put(("stdout", out_output.strip()))
+                if err_output.strip():
+                    self.output_queue.put(("stderr", err_output.strip()))
                 self.output_queue.put(("response", result))
             except queue.Empty:
                 continue
             except Exception as e:
+                out_output = self._strip_ansi(stdout_buf.getvalue())
+                stdout_buf.truncate(0)
+                stdout_buf.seek(0)
+                err_output = stderr_buf.getvalue()
+                stderr_buf.truncate(0)
+                stderr_buf.seek(0)
+                if out_output.strip():
+                    self.output_queue.put(("stdout", out_output.strip()))
+                if err_output.strip():
+                    self.output_queue.put(("stderr", err_output.strip()))
                 self.output_queue.put(("error", str(e)))
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
         self._loop.run_until_complete(self.agent.close())
         self._loop.close()
+
+    @staticmethod
+    def _strip_ansi(text: str) -> str:
+        return re.sub(r'\033\[[0-9;]*m', '', text)
 
     def _wait_for_agent(self, timeout: float = 15.0):
         start = time.time()
@@ -293,6 +252,25 @@ class AgentRunner:
         except queue.Empty:
             return None
 
+    def set_workspace(self, path: str):
+        if self.agent:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._async_set_workspace(path), self._loop
+                )
+                fut.result(timeout=10)
+            except Exception:
+                pass
+
+    async def _async_set_workspace(self, path: str):
+        self.agent.set_workspace(path)
+
+    def set_current_file(self, path: str | None, content: str = ""):
+        if self.agent:
+            self._loop.call_soon_threadsafe(
+                self.agent.set_current_file, path, content
+            )
+
     def stop(self):
         self._running = False
         self.input_queue.put(None)
@@ -300,146 +278,177 @@ class AgentRunner:
             self._thread.join(timeout=5)
 
 
+# ── TerminalPanel ─────────────────────────────────────────────────
 class TerminalPanel(tk.Frame):
-    def __init__(self, parent: tk.Widget, agent_runner: AgentRunner,
-                 on_agent_done=None):
-        super().__init__(parent, bg=BG)
-        self.agent_runner = agent_runner
-        self.on_agent_done = on_agent_done
-        self._waiting = False
+    def __init__(self, parent: tk.Widget, on_submit=None):
+        super().__init__(parent, bg=TERM_BG)
+        self.on_submit = on_submit
+        self._history: list[str] = []
+        self._history_index = -1
         self._build_ui()
 
     def _build_ui(self):
-        header = tk.Label(self, text="TERMINAL", font=("Segoe UI", 9, "bold"),
-                          bg=BG2, fg=FG, anchor="w", padx=8, pady=4)
-        header.pack(fill=tk.X)
-
         self.output_area = tk.Text(self, wrap=tk.WORD, font=("Consolas", 10),
-                                   bg=TERMINAL_BG, fg=FG, insertbackground=FG,
+                                   bg=TERM_BG, fg=TERM_FG, insertbackground=TERM_FG,
                                    state=tk.DISABLED, relief=tk.FLAT,
-                                   selectbackground=SEL_BG, padx=6, pady=4)
+                                   selectbackground=SEL_BG, padx=6, pady=4,
+                                   highlightthickness=0, borderwidth=0)
         self.output_area.pack(fill=tk.BOTH, expand=True)
-
-        scroll = tk.Scrollbar(self.output_area, orient=tk.VERTICAL,
-                              bg=SCROLL_BG, troughcolor=SCROLL_BG,
-                              activebackground=SCROLL_FG, elementborderwidth=0)
+        scroll = AutoHideScrollbar(self.output_area, orient=tk.VERTICAL)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.output_area.config(yscrollcommand=scroll.set)
         scroll.config(command=self.output_area.yview)
 
-        input_frame = tk.Frame(self, bg=BG)
-        input_frame.pack(fill=tk.X, pady=(0, 0))
+        input_frame = tk.Frame(self, bg=TERM_BG)
+        input_frame.pack(fill=tk.X)
+
+        prompt_lbl = tk.Label(input_frame, text=">", font=("Consolas", 10),
+                              bg=TERM_BG, fg=TERM_FG, width=1)
+        prompt_lbl.pack(side=tk.LEFT)
 
         self.input_var = tk.StringVar()
         self.input_entry = tk.Entry(input_frame, textvariable=self.input_var,
-                                    font=("Consolas", 10), bg=INPUT_BG, fg=FG,
-                                    insertbackground=FG, relief=tk.FLAT,
-                                    highlightbackground=BORDER, highlightcolor=ACCENT)
-        self.input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 0))
+                                    font=("Consolas", 10), bg=TERM_BG, fg=TERM_FG,
+                                    insertbackground=TERM_FG, relief=tk.FLAT,
+                                    highlightthickness=0, bd=0)
+        self.input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
         self.input_entry.bind("<Return>", self._on_submit)
+        self.input_entry.bind("<Up>", self._history_up)
+        self.input_entry.bind("<Down>", self._history_down)
 
-        self.send_btn = tk.Button(input_frame, text="Send", command=self._on_submit,
-                                  font=("Segoe UI", 9), bg=ACCENT, fg="white",
-                                  activebackground="#005999", activeforeground="white",
-                                  relief=tk.FLAT, padx=12, pady=2, cursor="hand2")
-        self.send_btn.pack(side=tk.RIGHT)
-
-        self._setup_tags()
-
-    def _setup_tags(self):
-        self.output_area.tag_config("user", foreground="#569CD6")
-        self.output_area.tag_config("agent", foreground="#6A9955")
-        self.output_area.tag_config("error", foreground="#F44747")
-        self.output_area.tag_config("info", foreground="#969696")
-        self.output_area.tag_config("prompt", foreground="#DCDCAA")
-        self.output_area.tag_config("sep", foreground="#3c3c3c")
+        self.output_area.tag_config("user", foreground=TERM_PROMPT)
+        self.output_area.tag_config("agent", foreground=TERM_AGENT)
+        self.output_area.tag_config("error", foreground=TERM_ERROR)
+        self.output_area.tag_config("info", foreground=TERM_INFO)
+        self.output_area.tag_config("prompt", foreground=TERM_BOLD)
+        self.output_area.tag_config("sep", foreground=TERM_SEP)
+        self.output_area.tag_config("bold", font=("Consolas", 10, "bold"))
+        self.input_entry.focus_set()
 
     def _on_submit(self, event=None):
-        prompt = self.input_var.get().strip()
-        if not prompt or self._waiting:
-            return
-        self._waiting = True
-        self._toggle_input(False)
-        self._append_output(f">>> {prompt}\n", "user")
+        text = self.input_var.get()
         self.input_var.set("")
-        self.agent_runner.submit(prompt)
-        self.after(100, self._poll_agent)
+        if text:
+            self._history.append(text)
+        self._history_index = len(self._history)
+        if self.on_submit:
+            self.on_submit(text)
 
-    def _poll_agent(self):
-        result = self.agent_runner.poll()
-        if result:
-            kind, data = result
-            if kind == "response":
-                self._append_output(f"{data}\n", "agent")
-                self._append_output("─" * 40 + "\n", "sep")
-                self._waiting = False
-                self._toggle_input(True)
-                self.input_entry.focus_set()
-                if self.on_agent_done:
-                    self.on_agent_done()
-            elif kind == "error":
-                self._append_output(f"[Error] {data}\n", "error")
-                self._append_output("─" * 40 + "\n", "sep")
-                self._waiting = False
-                self._toggle_input(True)
-                self.input_entry.focus_set()
-            else:
-                self.after(100, self._poll_agent)
+    def _history_up(self, event=None):
+        if not self._history:
+            return
+        self._history_index = max(0, self._history_index - 1)
+        self.input_var.set(self._history[self._history_index])
+
+    def _history_down(self, event=None):
+        if self._history_index >= len(self._history):
+            return
+        self._history_index += 1
+        if self._history_index >= len(self._history):
+            self.input_var.set("")
+            self._history_index = len(self._history)
         else:
-            self.after(100, self._poll_agent)
+            self.input_var.set(self._history[self._history_index])
 
-    def _toggle_input(self, enabled: bool):
-        state = tk.NORMAL if enabled else tk.DISABLED
-        self.input_entry.config(state=state)
-        self.send_btn.config(state=state)
-
-    def _append_output(self, text: str, tag: str = ""):
+    def write(self, text: str, tag: str = ""):
         self.output_area.config(state=tk.NORMAL)
         self.output_area.insert(tk.END, text, tag)
         self.output_area.see(tk.END)
         self.output_area.config(state=tk.DISABLED)
 
-    def append_info(self, text: str):
-        self._append_output(text + "\n", "info")
+    def writeline(self, text: str, tag: str = ""):
+        self.write(text + "\n", tag)
+
+    def set_waiting(self, waiting: bool):
+        state = tk.NORMAL if not waiting else tk.DISABLED
+        self.input_entry.config(state=state)
+
+    def focus_input(self):
+        self.input_entry.focus_set()
 
 
+# ── SyntaxHighlightText ───────────────────────────────────────────
+class SyntaxHighlightText(tk.Text):
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._highlight_after = None
+
+        for tag, color in HIGHLIGHT_TAGS.items():
+            self.tag_config(tag, foreground=color)
+
+        self.bind("<<Modified>>", self._on_modified)
+
+    def _on_modified(self, event=None):
+        if self.edit_modified():
+            self.edit_modified(False)
+            if self._highlight_after:
+                self.after_cancel(self._highlight_after)
+            self._highlight_after = self.after(400, self._rehighlight)
+
+    def _rehighlight(self):
+        for tag in HIGHLIGHT_TAGS:
+            self.tag_remove(tag, "1.0", tk.END)
+        try:
+            text = self.get("1.0", tk.END)
+        except tk.TclError:
+            return
+        char_pos = 0
+        for segment, tag in _highlight_python(text):
+            if tag and segment:
+                line = text[:char_pos].count("\n") + 1
+                col = char_pos - text[:char_pos].rfind("\n") - 1
+                start = f"{line}.{col}"
+                try:
+                    self.tag_add(tag, start, f"{start}+{len(segment)}c")
+                except tk.TclError:
+                    pass
+            char_pos += len(segment)
+
+    def load_content(self, content: str):
+        self.delete("1.0", tk.END)
+        self.insert("1.0", content)
+        self.edit_reset()
+        self.edit_modified(False)
+        self.after(200, self._rehighlight)
+
+
+# ── EditorPanel ───────────────────────────────────────────────────
 class EditorPanel(tk.Frame):
-    def __init__(self, parent: tk.Widget):
-        super().__init__(parent, bg=BG)
+    def __init__(self, parent: tk.Widget, on_file_open=None):
+        super().__init__(parent, bg=HEADER_BG)
         self._filepath: str | None = None
         self._mtime: float = 0.0
         self._modified = False
+        self.on_file_open = on_file_open
         self._build_ui()
 
     def _build_ui(self):
-        header = tk.Frame(self, bg=BG2)
+        header = tk.Frame(self, bg=HEADER_BG)
         header.pack(fill=tk.X)
 
         self.file_label = tk.Label(header, text="EDITOR (no file open)",
                                    font=("Segoe UI", 9, "bold"),
-                                   bg=BG2, fg=FG, anchor="w", padx=8, pady=4)
+                                   bg=HEADER_BG, fg=TERM_INFO, anchor="w", padx=8, pady=4)
         self.file_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         btn_font = ("Segoe UI", 8)
-        btn_frame = tk.Frame(header, bg=BG2)
+        btn_frame = tk.Frame(header, bg=HEADER_BG)
         btn_frame.pack(side=tk.RIGHT, padx=4)
 
         self.open_btn = tk.Button(btn_frame, text="Open", command=self._open_file,
-                                  font=btn_font, bg=BG2, fg=FG,
-                                  activebackground=BG, activeforeground=FG,
+                                  font=btn_font, bg=HEADER_BG, fg=TERM_FG,
+                                  activebackground="#333", activeforeground=TERM_FG,
                                   relief=tk.FLAT, padx=6, pady=1, cursor="hand2")
         self.open_btn.pack(side=tk.LEFT, padx=1)
-
         self.save_btn = tk.Button(btn_frame, text="Save", command=self._save_file,
-                                  font=btn_font, bg=BG2, fg=FG,
-                                  activebackground=BG, activeforeground=FG,
+                                  font=btn_font, bg=HEADER_BG, fg=TERM_FG,
+                                  activebackground="#333", activeforeground=TERM_FG,
                                   relief=tk.FLAT, padx=6, pady=1, cursor="hand2",
                                   state=tk.DISABLED)
         self.save_btn.pack(side=tk.LEFT, padx=1)
-
         self.reload_btn = tk.Button(btn_frame, text="Reload", command=self._reload_file,
-                                    font=btn_font, bg=BG2, fg=FG,
-                                    activebackground=BG, activeforeground=FG,
+                                    font=btn_font, bg=HEADER_BG, fg=TERM_FG,
+                                    activebackground="#333", activeforeground=TERM_FG,
                                     relief=tk.FLAT, padx=6, pady=1, cursor="hand2",
                                     state=tk.DISABLED)
         self.reload_btn.pack(side=tk.LEFT, padx=1)
@@ -447,32 +456,31 @@ class EditorPanel(tk.Frame):
         editor_frame = tk.Frame(self, bg=EDITOR_BG)
         editor_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.editor = tk.Text(editor_frame, wrap=tk.WORD, font=("Consolas", 10),
-                              bg=EDITOR_BG, fg=FG, insertbackground=FG,
-                              relief=tk.FLAT, selectbackground=SEL_BG,
-                              padx=8, pady=4, undo=True)
+        self.editor = SyntaxHighlightText(
+            editor_frame, wrap=tk.WORD, font=("Consolas", 10),
+            bg=EDITOR_BG, fg=EDITOR_FG, insertbackground=EDITOR_FG,
+            relief=tk.FLAT, selectbackground=SEL_BG,
+            padx=8, pady=4, undo=True, highlightthickness=0, borderwidth=0,
+        )
         self.editor.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
 
-        scroll = tk.Scrollbar(editor_frame, orient=tk.VERTICAL,
-                              bg=SCROLL_BG, troughcolor=SCROLL_BG,
-                              activebackground=SCROLL_FG, elementborderwidth=0)
+        scroll = AutoHideScrollbar(editor_frame, orient=tk.VERTICAL)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.editor.config(yscrollcommand=scroll.set)
         scroll.config(command=self.editor.yview)
-
-        self.editor.bind("<<Modified>>", self._on_modified)
 
     def _open_file(self, path: str | None = None):
         if path is None:
             path = filedialog.askopenfilename(
                 title="Open File",
                 filetypes=[("All Files", "*.*"), ("Python", "*.py"),
-                           ("Text", "*.txt"), ("Markdown", "*.md")],
-            )
+                           ("Text", "*.txt"), ("Markdown", "*.md")])
         if not path:
             return
         self._filepath = path
-        self._load_file_content()
+        content = self._load_file_content()
+        if content is None:
+            return
         try:
             self._mtime = os.path.getmtime(path)
         except OSError:
@@ -481,18 +489,18 @@ class EditorPanel(tk.Frame):
         self.file_label.config(text=f"EDITOR: {Path(path).name}")
         self.save_btn.config(state=tk.NORMAL)
         self.reload_btn.config(state=tk.NORMAL)
+        if self.on_file_open:
+            self.on_file_open(path, content)
 
-    def _load_file_content(self):
+    def _load_file_content(self) -> str | None:
         try:
             with open(self._filepath, encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except Exception as e:
             messagebox.showerror("Error", f"Could not read file:\n{e}")
-            return
-        self.editor.delete("1.0", tk.END)
-        self.editor.insert("1.0", content)
-        self.editor.edit_reset()
-        self.editor.mark_set(tk.INSERT, "1.0")
+            return None
+        self.editor.load_content(content)
+        return content
 
     def _save_file(self, event=None):
         if not self._filepath:
@@ -509,10 +517,9 @@ class EditorPanel(tk.Frame):
     def _reload_file(self, event=None):
         if not self._filepath:
             return
-        if self._modified:
-            if not messagebox.askyesno("Unsaved Changes",
-                                       "Reload will lose unsaved changes. Continue?"):
-                return
+        if self._modified and not messagebox.askyesno("Unsaved Changes",
+                                                      "Reload will lose unsaved changes. Continue?"):
+            return
         self._load_file_content()
         try:
             self._mtime = os.path.getmtime(self._filepath)
@@ -520,100 +527,81 @@ class EditorPanel(tk.Frame):
             self._mtime = 0.0
         self._modified = False
 
-    def _on_modified(self, event=None):
-        if self.editor.edit_modified():
-            self._modified = True
-            self.editor.edit_modified(False)
-
     def check_external_change(self):
         if not self._filepath or not os.path.exists(self._filepath):
             return
         try:
-            current_mtime = os.path.getmtime(self._filepath)
+            current = os.path.getmtime(self._filepath)
         except OSError:
             return
-        if current_mtime != self._mtime:
-            self._mtime = current_mtime
+        if current != self._mtime:
+            self._mtime = current
             if self._modified:
-                self.file_label.config(
-                    text=f"EDITOR: {Path(self._filepath).name} [ext]"
-                )
+                self.file_label.config(text=f"EDITOR: {Path(self._filepath).name} [ext]")
             else:
                 self._load_file_content()
 
-    @property
-    def current_file(self) -> str | None:
-        return self._filepath
 
-
+# ── FileExplorer ──────────────────────────────────────────────────
 class FileExplorer(tk.Frame):
-    def __init__(self, parent: tk.Widget, editor: EditorPanel):
-        super().__init__(parent, bg=BG)
+    def __init__(self, parent: tk.Widget, editor: EditorPanel, on_folder_open=None):
+        super().__init__(parent, bg=EXPLORER_BG)
         self.editor = editor
+        self.on_folder_open = on_folder_open
         self._root_path: str | None = None
         self._build_ui()
 
     def _build_ui(self):
         header = tk.Label(self, text="EXPLORER", font=("Segoe UI", 9, "bold"),
-                          bg=BG2, fg=FG, anchor="w", padx=8, pady=4)
+                          bg=HEADER_BG, fg=TERM_INFO, anchor="w", padx=8, pady=4)
         header.pack(fill=tk.X)
 
-        btn_frame = tk.Frame(self, bg=BG2)
+        btn_frame = tk.Frame(self, bg=HEADER_BG)
         btn_frame.pack(fill=tk.X)
+        tk.Button(btn_frame, text="Open Folder", command=self.open_folder,
+                  font=("Segoe UI", 8), bg=HEADER_BG, fg=TERM_FG,
+                  activebackground="#333", activeforeground=TERM_FG,
+                  relief=tk.FLAT, padx=6, pady=1, cursor="hand2").pack(side=tk.LEFT, padx=4, pady=2)
+        tk.Button(btn_frame, text="Refresh", command=self._refresh_tree,
+                  font=("Segoe UI", 8), bg=HEADER_BG, fg=TERM_FG,
+                  activebackground="#333", activeforeground=TERM_FG,
+                  relief=tk.FLAT, padx=6, pady=1, cursor="hand2").pack(side=tk.LEFT, padx=2, pady=2)
 
-        self.folder_btn = tk.Button(btn_frame, text="Open Folder",
-                                    command=self._open_folder,
-                                    font=("Segoe UI", 8), bg=BG2, fg=FG,
-                                    activebackground=BG, activeforeground=FG,
-                                    relief=tk.FLAT, padx=6, pady=1, cursor="hand2")
-        self.folder_btn.pack(side=tk.LEFT, padx=4, pady=2)
-
-        self.refresh_btn = tk.Button(btn_frame, text="Refresh",
-                                     command=self._refresh_tree,
-                                     font=("Segoe UI", 8), bg=BG2, fg=FG,
-                                     activebackground=BG, activeforeground=FG,
-                                     relief=tk.FLAT, padx=6, pady=1, cursor="hand2")
-        self.refresh_btn.pack(side=tk.LEFT, padx=2, pady=2)
-
-        tree_frame = tk.Frame(self, bg=EDITOR_BG)
+        tree_frame = tk.Frame(self, bg=EXPLORER_BG)
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Treeview", background=EDITOR_BG, foreground=FG,
-                        fieldbackground=EDITOR_BG, font=("Consolas", 9),
-                        rowheight=22)
-        style.configure("Treeview.Item", padding=(2, 0))
+        style.configure("Treeview", background=EXPLORER_BG, foreground=TERM_FG,
+                        fieldbackground=EXPLORER_BG, font=("Consolas", 9), rowheight=22)
         style.map("Treeview", background=[("selected", SEL_BG)],
-                  foreground=[("selected", FG)])
-        style.configure("Treeview.Heading", background=BG2, foreground=FG,
+                  foreground=[("selected", TERM_FG)])
+        style.configure("Treeview.Heading", background=HEADER_BG, foreground=TERM_FG,
                         font=("Segoe UI", 8), relief=tk.FLAT)
 
-        self.tree = ttk.Treeview(tree_frame, show="tree", columns=(),
-                                 style="Treeview")
+        self.tree = ttk.Treeview(tree_frame, show="tree", columns=(), style="Treeview")
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scroll = tk.Scrollbar(tree_frame, orient=tk.VERTICAL,
-                              bg=SCROLL_BG, troughcolor=SCROLL_BG,
-                              activebackground=SCROLL_FG, elementborderwidth=0)
+        scroll = AutoHideScrollbar(tree_frame, orient=tk.VERTICAL)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.config(yscrollcommand=scroll.set)
         scroll.config(command=self.tree.yview)
-
         self.tree.bind("<Double-1>", self._on_item_double_click)
 
-    def _open_folder(self):
-        path = filedialog.askdirectory(title="Open Folder")
+    def open_folder(self, path: str | None = None):
+        if path is None:
+            path = filedialog.askdirectory(title="Open Folder")
         if not path:
             return
         self._root_path = path
         self._refresh_tree()
+        if self.on_folder_open:
+            self.on_folder_open(path)
 
     def _refresh_tree(self):
         self.tree.delete(*self.tree.get_children())
-        if not self._root_path:
-            return
-        self._populate_tree("", self._root_path)
+        if self._root_path:
+            self._populate_tree("", self._root_path)
 
     def _populate_tree(self, parent_id: str, dirpath: str):
         try:
@@ -625,74 +613,336 @@ class FileExplorer(tk.Frame):
         for name in dirs + files:
             full = os.path.join(dirpath, name)
             is_dir = os.path.isdir(full)
-            node_id = self.tree.insert(parent_id, tk.END, text=name,
-                                       open=False,
-                                       tags=("dir" if is_dir else "file"))
-            self.tree.item(node_id, values=(full,))
+            node = self.tree.insert(parent_id, tk.END, text=name, open=False)
+            self.tree.item(node, values=(full,))
             if is_dir:
-                self._populate_tree(node_id, full)
+                self._populate_tree(node, full)
 
     def _on_item_double_click(self, event=None):
         sel = self.tree.selection()
         if not sel:
             return
-        item = sel[0]
-        full_path = self.tree.item(item, "values")
-        if not full_path:
-            return
-        path = full_path[0]
-        if os.path.isfile(path):
-            self.editor._open_file(path)
+        full = self.tree.item(sel[0], "values")
+        if full and os.path.isfile(full[0]):
+            self.editor._open_file(full[0])
 
 
+# ── BingusGUI ─────────────────────────────────────────────────────
 class BingusGUI(tk.Tk):
     def __init__(self, config: AgentConfig | None = None):
         super().__init__()
         self.title("Bingus IA — AI Programming Assistant")
         self.geometry("1500x850")
         self.minsize(1000, 500)
-        self.configure(bg=BG)
+        self.configure(bg=HEADER_BG)
 
-        if config is None:
-            config = self._show_startup_dialog()
-            if config is None:
-                self.destroy()
-                return
+        self.config: AgentConfig | None = None
+        self.agent_runner: AgentRunner | None = None
+        self._setup_state = SetupState.PROVIDER
+        self._ollama_models: list[str] = []
+        self._poller_running = False
 
-        self.agent_runner = AgentRunner(config)
         self._build_ui()
-        self._start_poller()
-
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        config_str = (
-            f"Provider: {config.provider}  |  "
-            f"Model: {config.model}  |  "
-            f"Workspace: {config.workspace_dir}"
-        )
-        self.terminal.append_info(config_str)
-        self.terminal.append_info("─" * 50)
-
-    def _show_startup_dialog(self) -> AgentConfig | None:
-        dialog = StartupDialog(self)
-        self.wait_window(dialog)
-        return dialog.result
+        if config and config.provider:
+            self.config = config
+            self._finish_setup()
+        else:
+            self._start_setup()
 
     def _build_ui(self):
-        paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=BG2,
+        paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=HEADER_BG,
                                sashrelief=tk.FLAT, sashwidth=3)
         paned.pack(fill=tk.BOTH, expand=True)
 
-        self.terminal = TerminalPanel(paned, self.agent_runner,
-                                      on_agent_done=self._on_agent_done)
+        self.terminal = TerminalPanel(paned, on_submit=self._on_input)
         paned.add(self.terminal, stretch="always", width=500)
 
-        self.editor = EditorPanel(paned)
+        self.editor = EditorPanel(paned, on_file_open=self._on_file_open)
         paned.add(self.editor, stretch="always", width=550)
 
-        self.explorer = FileExplorer(paned, self.editor)
+        self.explorer = FileExplorer(paned, self.editor,
+                                     on_folder_open=self._on_folder_open)
         paned.add(self.explorer, stretch="never", width=220)
 
+    def _print_banner(self):
+        self.terminal.writeline("Bingus IA \u2014 Agentic Programming Assistant", "bold")
+        self.terminal.writeline("\u2500" * 50, "sep")
+
+    # ── Setup flow ────────────────────────────────────────────────
+    def _start_setup(self):
+        self._print_banner()
+        self._setup_state = SetupState.PROVIDER
+        self._show_providers()
+
+    def _show_providers(self):
+        self.terminal.writeline("Available providers:", "info")
+        for i, p in enumerate(PROVIDER_NAMES, 1):
+            self.terminal.writeline(f"  [{i}] {p}", "prompt")
+        self.terminal.write("Select provider [1-4] (Enter for ollama): ", "prompt")
+        self.terminal.focus_input()
+
+    def _show_ollama_url(self):
+        self.terminal.write("Ollama URL (Enter for http://localhost:11434): ", "prompt")
+        self.terminal.focus_input()
+
+    def _show_ollama_models(self):
+        if not self._ollama_models:
+            self.terminal.writeline("  No models found or could not reach Ollama.", "error")
+            self.config.model = "codellama:7b"
+            self._finish_setup()
+            return
+        self.terminal.writeline("Available models:", "info")
+        default_model = self.config.model or self._ollama_models[0]
+        for i, name in enumerate(self._ollama_models, 1):
+            marker = " (default)" if name == default_model else ""
+            self.terminal.writeline(f"  [{i}] {name}{marker}", "prompt")
+        self.terminal.write(f"Select model [1-{len(self._ollama_models)}] (Enter for {default_model}): ", "prompt")
+        self.terminal.focus_input()
+
+    def _show_api_key(self):
+        self.terminal.write(f"API key for {self.config.provider}: ", "prompt")
+        self.terminal.focus_input()
+
+    def _show_api_base_url(self):
+        defaults = {"openai": "https://api.openai.com/v1",
+                    "anthropic": "https://api.anthropic.com/v1",
+                    "opencode": "https://opencode.ai/zen/v1"}
+        dflt = defaults.get(self.config.provider, "")
+        self.terminal.write(f"API base URL (Enter for {dflt}): ", "prompt")
+        self.terminal.focus_input()
+
+    def _show_model_name(self):
+        dflt = self.config.model or "gpt-4o"
+        if self.config.provider == "opencode":
+            dflt = "big-pickle"
+        self.terminal.write(f"Model name (Enter for {dflt}): ", "prompt")
+        self.terminal.focus_input()
+
+    def _on_input(self, text: str):
+        if self._setup_state != SetupState.DONE:
+            if text:
+                self.terminal.writeline(f">>> {text}", "user")
+            else:
+                self.terminal.writeline(">>> (default)", "prompt")
+            self._handle_setup_input(text)
+        elif text.startswith("/terminal "):
+            cmd = text[len("/terminal "):]
+            self.terminal.writeline(f"$ {cmd}", "user")
+            self.terminal.set_waiting(True)
+            threading.Thread(target=self._run_terminal_cmd, args=(cmd,), daemon=True).start()
+        elif self.agent_runner:
+            if text:
+                self.terminal.writeline(f">>> {text}", "user")
+            self.terminal.set_waiting(True)
+            self.agent_runner.submit(text)
+            self.after(100, self._poll_agent)
+        else:
+            self.terminal.writeline("Agent not ready. Restart the application.", "error")
+
+    def _handle_setup_input(self, text: str):
+        state = self._setup_state
+
+        if state == SetupState.PROVIDER:
+            if not text:
+                idx = 0
+            else:
+                try:
+                    idx = int(text) - 1
+                except ValueError:
+                    idx = -1
+            if idx < 0 or idx >= len(PROVIDER_NAMES):
+                self.terminal.writeline(f"Enter a number between 1 and {len(PROVIDER_NAMES)}", "error")
+                self._show_providers()
+                return
+            provider = PROVIDER_NAMES[idx]
+            if self.config is None:
+                self.config = AgentConfig()
+            self.config.provider = provider
+            self.config.model = "codellama:7b"
+
+            if provider == "ollama":
+                self._setup_state = SetupState.OLLAMA_URL
+                self._show_ollama_url()
+            else:
+                self._setup_state = SetupState.API_KEY
+                self._show_api_key()
+
+        elif state == SetupState.OLLAMA_URL:
+            if text:
+                self.config.ollama_base_url = text
+            else:
+                self.terminal.writeline(f"  Using default: {self.config.ollama_base_url}", "info")
+            self.terminal.writeline(f"  Fetching models...", "info")
+            self.terminal.set_waiting(True)
+            threading.Thread(target=self._fetch_and_show_ollama_models, daemon=True).start()
+
+        elif state == SetupState.OLLAMA_MODEL:
+            if not text:
+                pass
+            elif text.isdigit():
+                idx = int(text) - 1
+                if 0 <= idx < len(self._ollama_models):
+                    self.config.model = self._ollama_models[idx]
+            else:
+                self.config.model = text
+            self._finish_setup()
+
+        elif state == SetupState.API_KEY:
+            if text:
+                self.config.api_key = text
+            self._setup_state = SetupState.API_BASE_URL
+            self._show_api_base_url()
+
+        elif state == SetupState.API_BASE_URL:
+            if text:
+                self.config.api_base_url = text
+            self._setup_state = SetupState.MODEL_NAME
+            self._show_model_name()
+
+        elif state == SetupState.MODEL_NAME:
+            defaults = {"opencode": "big-pickle", "ollama": "codellama:7b",
+                        "openai": "gpt-4o", "anthropic": "claude-sonnet-4-20250514"}
+            if text:
+                self.config.model = text
+            else:
+                self.config.model = defaults.get(self.config.provider, self.config.model)
+            self._finish_setup()
+
+    def _fetch_and_show_ollama_models(self):
+        models = _run_ollama_fetch(self.config.ollama_base_url)
+        self.after(0, self._on_ollama_models_fetched, models)
+
+    def _on_ollama_models_fetched(self, models: list[str]):
+        self.terminal.set_waiting(False)
+        self._ollama_models = models
+        if models:
+            self.config.model = models[0] if self.config.model not in models else self.config.model
+        self._setup_state = SetupState.OLLAMA_MODEL
+        self._show_ollama_models()
+
+    def _finish_setup(self):
+        save_config(self.config)
+        self.terminal.writeline("\u2500" * 50, "sep")
+        line = f"  Provider: {self.config.provider}  |  Model: {self.config.model}"
+        if self.config.provider == "ollama":
+            line += f"  |  Ollama: {self.config.ollama_base_url}"
+        else:
+            line += f"  |  API Key: {'<set>' if self.config.api_key else '<not set>'}"
+        self.terminal.writeline(line, "info")
+        self.terminal.writeline("Starting agent...", "info")
+        self.terminal.writeline("\u2500" * 50, "sep")
+        self.terminal.set_waiting(True)
+        threading.Thread(target=self._init_agent_thread, daemon=True).start()
+
+    def _init_agent_thread(self):
+        try:
+            self.agent_runner = AgentRunner(self.config)
+            self.after(0, self._on_agent_ready)
+        except Exception as e:
+            self.after(0, self._on_agent_error, str(e))
+
+    def _on_agent_ready(self):
+        self._setup_state = SetupState.DONE
+        self.terminal.set_waiting(False)
+        if self.config and self.config.workspace_dir:
+            ws = self.config.workspace_dir
+            if os.path.isdir(ws):
+                self.explorer.open_folder(ws)
+        self.terminal.writeline("Agent ready. Enter your prompt below.", "agent")
+        self.terminal.writeline("\u2500" * 50, "sep")
+        self.terminal.focus_input()
+        self._start_poller()
+
+    def _on_agent_error(self, error: str):
+        self.terminal.set_waiting(False)
+        self.terminal.writeline(f"[Error] {error}", "error")
+        self.terminal.writeline("Check your config and try again.", "error")
+        self._start_setup()
+
+    # ── Agent interaction ─────────────────────────────────────────
+    def _poll_agent(self):
+        if not self.agent_runner:
+            return
+        result = self.agent_runner.poll()
+        if result:
+            kind, data = result
+            if kind == "response":
+                self.terminal.writeline(data, "agent")
+                self.terminal.writeline("\u2500" * 40, "sep")
+                self.terminal.set_waiting(False)
+                self.terminal.focus_input()
+                self.editor.check_external_change()
+            elif kind == "error":
+                self.terminal.writeline(f"[Error] {data}", "error")
+                self.terminal.writeline("\u2500" * 40, "sep")
+                self.terminal.set_waiting(False)
+                self.terminal.focus_input()
+            elif kind == "stdout":
+                for line in data.split("\n"):
+                    line = line.strip()
+                    if line:
+                        self.terminal.writeline(f"  {line}", "info")
+                self.after(100, self._poll_agent)
+            elif kind == "stderr":
+                for line in data.split("\n"):
+                    line = line.strip()
+                    if line:
+                        self.terminal.writeline(f"  {line}", "error")
+                self.after(100, self._poll_agent)
+            else:
+                self.after(100, self._poll_agent)
+        else:
+            self.after(100, self._poll_agent)
+
+    def _on_file_open(self, path: str, content: str):
+        if self.agent_runner:
+            self.agent_runner.set_current_file(path, content)
+
+    def _on_folder_open(self, path: str):
+        if self.agent_runner:
+            try:
+                self.agent_runner.set_workspace(path)
+                self.config.workspace_dir = path
+                save_config(self.config)
+                self.terminal.writeline(f"Workspace set to: {path}", "info")
+            except Exception as e:
+                self.terminal.writeline(f"Error setting workspace: {e}", "error")
+            self.terminal.writeline("\u2500" * 40, "sep")
+
+    def _run_terminal_cmd(self, cmd: str):
+        import subprocess
+        try:
+            cwd = self.config.workspace_dir if self.config else "."
+            proc = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                cwd=cwd, timeout=60,
+            )
+            out = proc.stdout or ""
+            err = proc.stderr or ""
+            result = out
+            if proc.returncode != 0:
+                if err:
+                    result = (out + "\n" + err) if out else err
+                result += f"\n[Exit code: {proc.returncode}]"
+            elif err:
+                result = (out + "\n[stderr]\n" + err) if out else err
+            if not result.strip():
+                result = "(no output)"
+        except subprocess.TimeoutExpired:
+            result = "[Error] Command timed out after 60s"
+        except Exception as e:
+            result = f"[Error] {e}"
+        self.after(0, self._on_terminal_result, result)
+
+    def _on_terminal_result(self, result: str):
+        self.terminal.writeline(result, "agent")
+        self.terminal.writeline("\u2500" * 40, "sep")
+        self.terminal.set_waiting(False)
+        self.terminal.focus_input()
+
+    # ── Poller ────────────────────────────────────────────────────
     def _start_poller(self):
         self._poller_running = True
         self._poller()
@@ -703,22 +953,19 @@ class BingusGUI(tk.Tk):
         self.editor.check_external_change()
         self.after(1000, self._poller)
 
-    def _on_agent_done(self):
-        self.editor.check_external_change()
-
     def _on_close(self):
         self._poller_running = False
-        self.agent_runner.stop()
+        if self.agent_runner:
+            self.agent_runner.stop()
         self.destroy()
 
 
 def run_gui():
     try:
         config = load_config()
-        if config.provider == "ollama" and config.model == "codellama:7b":
+        if not config.provider or (config.provider == "ollama" and config.model == "codellama:7b"):
             config = None
     except Exception:
         config = None
-
     app = BingusGUI(config)
     app.mainloop()

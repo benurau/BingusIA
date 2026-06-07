@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from bingus_ia.memory.blocks import MemoryBlocks
+from bingus_ia.memory.blocks import MemoryBlocks, TOKEN_BUDGET, CHAR_BUDGET
 
 
 class TestMemoryBlocks:
@@ -51,9 +51,9 @@ class TestMemoryBlocks:
         assert not result.success
 
     def test_render_for_prompt_obeys_budget(self):
-        self.blocks.set_block("persona", "x" * 5000)
+        self.blocks.set_block("persona", "x" * (CHAR_BUDGET + 5000))
         rendered = self.blocks.render_for_prompt()
-        assert len(rendered) <= 300 * 4 + 200
+        assert len(rendered) <= CHAR_BUDGET + 200
 
     def test_render_for_prompt_includes_blocks(self):
         self.blocks.set_block("persona", "Be concise.")
@@ -74,11 +74,11 @@ class TestMemoryBlocks:
 
     def test_render_for_prompt_stops_when_budget_exceeded(self):
         small = "x" * 100
-        large = "y" * (300 * 4)
+        large = "y" * (CHAR_BUDGET + 100)
         self.blocks.set_block("human", small)
         self.blocks.set_block("project", large)
         rendered = self.blocks.render_for_prompt()
-        assert len(rendered) <= 300 * 4 + 100
+        assert len(rendered) <= CHAR_BUDGET + 200
 
     def test_persistence_across_reload(self):
         self.blocks.set_block("project", "Uses FastAPI")
@@ -102,14 +102,14 @@ class TestMemoryBlocks:
         assert "Bingus: hi there" in content
 
     def test_remember_exchange_evicts_oldest(self):
-        for i in range(15):
+        for i in range(50):
             self.blocks.remember_exchange("x" * 200, "y" * 200)
         remaining = sorted(self.blocks._dir.glob("exchange-*.md"))
-        assert len(remaining) < 15
+        assert len(remaining) < 50
 
     def test_evict_old_blocks_removes_custom_blocks_over_budget(self):
-        for i in range(20):
+        for i in range(200):
             self.blocks.set_block(f"custom-block-{i}", "x" * 200)
         self.blocks._evict_old_blocks()
         remaining = list(self.blocks._dir.glob("custom-block-*.md"))
-        assert len(remaining) < 20
+        assert len(remaining) < 200
