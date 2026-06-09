@@ -315,6 +315,8 @@ class TerminalPanel(tk.Frame):
         self.input_entry.bind("<Return>", self._on_submit)
         self.input_entry.bind("<Up>", self._history_up)
         self.input_entry.bind("<Down>", self._history_down)
+        self.input_entry.bind("<Control-z>", self._undo_input)
+        self.input_entry.bind("<Control-Z>", self._undo_input)
 
         self.output_area.tag_config("user", foreground=TERM_PROMPT)
         self.output_area.tag_config("agent", foreground=TERM_AGENT)
@@ -349,6 +351,12 @@ class TerminalPanel(tk.Frame):
             self._history_index = len(self._history)
         else:
             self.input_var.set(self._history[self._history_index])
+
+    def _undo_input(self, event=None):
+        current = self.input_var.get()
+        if current:
+            self.input_var.set("")
+        return "break"
 
     def write(self, text: str, tag: str = ""):
         self.output_area.config(state=tk.NORMAL)

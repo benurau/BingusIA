@@ -59,8 +59,8 @@ class OllamaClient(BaseLLMClient):
         reply = body["message"]
         return Message(
             role=Role(reply.get("role", "assistant")),
-            content=reply.get("content", ""),
-            tool_calls=reply.get("tool_calls", []),
+            content=reply.get("content") or "",
+            tool_calls=reply.get("tool_calls") or [],
         )
 
     async def _stream(self, raw: str):

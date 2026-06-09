@@ -8,5 +8,6 @@
   "max_turns": 25,
   "memory_enabled": true,
   "injection_dir": "injections",
+  "prompt_dir": "prompt",
   "embedding_model": "nomic-embed-text"
 }

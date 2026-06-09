@@ -1,17 +1,20 @@
 # BingusIA
 
-A self-hosted agentic AI programming assistant that connects to local or cloud LLMs (Ollama, OpenAI, Anthropic) to help with software engineering tasks. It can read/write files, search code, run shell commands, search the web, and maintain persistent memory across conversations.
+A self-hosted agentic AI programming assistant that connects to local or cloud LLMs to autonomously perform software engineering tasks — file editing, code search, shell commands, web research, and more.
 
-## Features
+## Technologies
 
-- **Multi-provider:** Ollama (local), OpenAI, Anthropic, or any OpenAI-compatible API
-- **File operations:** Read, write, edit files with diff display
-- **Code search:** ripgrep-powered code search within a workspace
-- **Web search:** DuckDuckGo search and page fetching
-- **Persistent memory:** SQLite-backed semantic memory with embedding search
-- **Rules/injections:** Extensible markdown-based rules with YAML frontmatter
-- **GUI & REST API:** Optional tkinter GUI and FastAPI server
-- **Cross-platform:** Windows, macOS, Linux
+- **Python 3.11+** — Core language
+- **LLM providers:** Ollama (local), OpenAI, Anthropic, OpenCode Zen
+- **httpx** — Async HTTP for API calls & web fetching
+- **FastAPI / uvicorn** — Optional REST API server
+- **SQLite** — Semantic memory with embedding-based retrieval
+- **tkinter** — Optional desktop GUI (terminal, editor, file explorer)
+- **DuckDuckGo Search** — Web search integration
+- **ripgrep** — Blazing-fast code search
+- **pytest** — Test framework
+- **PyYAML** — YAML frontmatter parsing for rules/injections
+- **setuptools** — Build & packaging
 
 ## Quick Start
 

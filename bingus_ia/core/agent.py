@@ -25,62 +25,22 @@ from bingus_ia.tools.web_search import WebSearch
 SYSTEM_PROMPT = """You are Bingus, an AI programming assistant with file system access.
 You can read and edit files in the workspace. You have memory of past conversations.
 
-Available tools:
-- write_file(path, content) - Use this to CREATE a new file or OVERWRITE an existing one
-- edit_file(path, old_string, new_string) - Use this to MODIFY an existing file by replacing exact text
-- read_file(path, offset?, limit?) - Read a file's contents
-- list_dir(path?) - List directory contents
-- search_code(pattern, include?) - Search code with ripgrep
-- memory_lookup(query, limit?) - Search past conversations
-- memory_list(limit?) - Show recent conversation history
-- create_rule(name, instruction, trigger?) - Create a persistent rule applied to all future prompts
-- delete_rule(name) - Remove a persistent rule
-- memory_block_list() - List persistent memory blocks (persona, human, project)
-- memory_block_set(name, content) - Overwrite a memory block entirely
-- memory_block_replace(name, old_string, new_string) - Replace text inside a memory block
-- web_search(query) - Search the web, returns titles/URLs/snippets
-- web_fetch(url) - Fetch full content from a URL, returns the page text
-- web_fetch_html(url) - Fetch raw HTML from a URL (for detailed parsing)
-- set_workspace(path) - Change the workspace directory
-- run_terminal(command, workdir?, timeout?) - Run a shell command and return its output (use for running/test programs)
+Available tools: write_file, edit_file, read_file, list_dir, search_code,
+memory_lookup, memory_list, create_rule, delete_rule, memory_block_list,
+memory_block_set, memory_block_replace, web_search, web_fetch, web_fetch_html,
+set_workspace, run_terminal. Use the function-calling interface for these.
 
-IMPORTANT RULES FOR TOOL SELECTION:
-- To CREATE a new file, ALWAYS use write_file, NOT edit_file
-- To OVERWRITE an existing file entirely, ALWAYS use write_file
-- edit_file is ONLY for making precise replacements inside an existing file
-- If you use edit_file with an empty old_string on a file that doesn't exist, it will create the file
-- All file paths must be relative to the workspace directory or within it: {{workspace_dir}}
-- Writing or reading outside this directory will fail. Tell the user and suggest moving the file.
-
-AUTOMATIC MEMORY:
-- Every conversation exchange is automatically saved as an "exchange" block
-- Old exchanges are evicted (oldest first) when the token budget is exceeded
-- You can also manually save important info with memory_block_set/memory_block_replace
-- Use memory_block_set(name="project", content="...") for project conventions
-- Use memory_block_set(name="persona", content="...") for behavioral preferences
-
-WEB SEARCH WORKFLOW:
-- Use web_search(query) to find information online — returns titles, URLs, and short snippets
-- Use web_fetch(url) to get the full text content of a specific page
-- Use web_fetch_html(url) to get the raw HTML for detailed parsing (e.g. tables, structured data)
-- Typical flow: web_search("hamburger recipe") → pick best URL → web_fetch(url) → present to user
-- Always share the source URL when presenting fetched content
-
-WHEN A TOOL FAILS:
-- DO NOT apologize and give up — retry with a different approach
-- If write_file fails with "File not found", check the Workspace files listing below and use list_dir to find correct paths
-- If edit_file fails because old_string doesn't match, read the file first to see the exact content, then retry
-- If a path error occurs, try writing to a simple path like the filename only (relative to workspace)
-- Read the error carefully and adjust your approach
-- After 2 failed attempts, explain the issue to the user and ask for guidance
-
-After using a tool, wait for the result before continuing.
-Think step by step. Read files before editing them.
-
-When you need to call a tool, use the function-calling mechanism.
-If your model does not support function calling, output a single JSON object:
-{"name": "write_file", "arguments": {"path": "test.txt", "content": "hello"}}
-Do not wrap it in markdown or add any other text."""
+Rules:
+- Create new files with write_file, modify with edit_file, read with read_file.
+- All paths must be within workspace: {{workspace_dir}}
+- If a tool fails, retry with a different approach. After 2 failures, explain to the user.
+- Past exchanges are auto-saved as memory blocks.
+- Use memory_block_set for project conventions or persona preferences.
+- For web content: web_search → pick URL → web_fetch/web_fetch_html.
+- Always share source URLs.
+- Think step by step, read before editing.
+- Use function-calling for tools. If unsupported, output JSON:
+  {"name": "tool_name", "arguments": {...}}"""
 
 TOOL_DEFINITIONS = [
     {
@@ -344,12 +304,16 @@ class Agent:
         self.blocks = MemoryBlocks(config.workspace_dir)
         self.web_search = WebSearch()
         self.injections = InjectionRegistry(config.injection_dir)
+        self.prompt_dir = Path(config.prompt_dir).resolve()
         self.summariser = WebSummariser(self.llm)
         self.messages: list[Message] = []
         self.turn_count = 0
         self._workspace_display = config.workspace_dir
         self.current_file_path: str | None = None
         self.current_file_content: str = ""
+        self.show_prompt = False
+        self._original_context: list[Message] | None = None
+        self._compress_attempts = 0
 
     def set_current_file(self, path: str | None, content: str = ""):
         self.current_file_path = path
@@ -490,6 +454,21 @@ class Agent:
         while self.turn_count < self.config.max_turns:
             self.turn_count += 1
 
+            if self.show_prompt:
+                print(f"  [prompt] --- begin turn {self.turn_count} ---", flush=True)
+                for i, m in enumerate(self.messages):
+                    role = m.role.value
+                    preview = m.content[:2000] if m.content else ""
+                    extra = ""
+                    if m.tool_calls:
+                        tcs = json.dumps([{k: v for k, v in tc.items() if k != "id"} for tc in m.tool_calls], indent=2)
+                        extra = f"\n    tool_calls={tcs}"
+                    if m.tool_call_id:
+                        extra += f"\n    tool_call_id={m.tool_call_id}"
+                    print(f"  [{i}] {role}: {preview[:300]}{'...' if len(preview) > 300 else ''}{extra}", flush=True)
+                print(f"  [prompt] --- end turn {self.turn_count} ---", flush=True)
+
+            print(f"  [llm] calling {self.config.model}...", flush=True)
             reply = await self.llm.chat(
                 messages=self.messages,
                 tools=TOOL_DEFINITIONS,
@@ -523,6 +502,14 @@ class Agent:
                 self.blocks.remember_exchange(user_input, reply.content)
                 return reply.content
 
+            if self._compress_attempts < 3:
+                self._compress_attempts += 1
+                print(f"  [llm] empty response — compressing context (attempt {self._compress_attempts}/3)", flush=True)
+                await self._compress_context(user_input)
+                continue
+            print("  [llm] empty response after 3 compressions, giving up", flush=True)
+            return "The model returned an empty response after multiple compression attempts."
+
         return "Agent reached maximum turn limit."
 
     async def _build_system_prompt(self, user_input: str) -> str:
@@ -544,8 +531,15 @@ class Agent:
                 f"they mean this file. To see the full file, use read_file."
             )
 
+        ws_triggers = ("file", "code", "project", "workspace", "list", "show",
+                       "read", "edit", "write", "create", "where", "structure",
+                       "open", "find", "search", "look", "directory", "folder",
+                       "all files", "source", "path", "tree", "browse")
+        user_lower = user_input.lower()
+        include_listing = any(t in user_lower for t in ws_triggers)
+
         workspace_path = self.config.workspace_dir
-        if workspace_path and Path(workspace_path).is_dir():
+        if include_listing and workspace_path and Path(workspace_path).is_dir():
             try:
                 all_files = []
                 for root, dirs, files in os.walk(workspace_path):
@@ -598,7 +592,69 @@ class Agent:
                 )
                 system = f"{system}\n\nRelevant past context:\n{history}"
 
+        if self.prompt_dir.is_dir():
+            md_files = sorted(self.prompt_dir.glob("*.md"))
+            if md_files:
+                extras = []
+                for f in md_files:
+                    try:
+                        content = f.read_text(encoding="utf-8").strip()
+                        if content:
+                            extras.append(f"--- {f.stem} ---\n{content}")
+                    except Exception:
+                        pass
+                if extras:
+                    system = f"{system}\n\nPrompt Extras:\n" + "\n\n".join(extras)
+
         return system
+
+    async def _compress_context(self, user_input: str) -> None:
+        parts = []
+        for m in self.messages:
+            role = m.role.value
+            content = m.content or ""
+            extra = ""
+            if m.tool_calls:
+                extra = f"\n[tool_calls]\n{json.dumps(m.tool_calls, default=str)}"
+            if m.tool_call_id:
+                extra += f"\n[tool_call_id: {m.tool_call_id}]"
+            parts.append(f"[{role}]\n{content}{extra}")
+        full_text = "\n\n---\n\n".join(parts)
+
+        chunk_size = 4000
+        chunks = [full_text[i:i+chunk_size] for i in range(0, len(full_text), chunk_size)]
+
+        if len(chunks) <= 1:
+            truncated = full_text[:6000]
+            self.messages = [
+                Message(role=Role.SYSTEM, content=f"[Truncated context]\n\n{truncated}"),
+                Message(role=Role.USER, content=user_input),
+            ]
+            return
+
+        print(f"  [compress] splitting {len(full_text)} chars into {len(chunks)} chunks", flush=True)
+        accumulated = ""
+        for i, chunk in enumerate(chunks):
+            prefix = f"Previous summary:\n{accumulated}\n\n" if accumulated else ""
+            prompt = (
+                f"{prefix}"
+                f"Summarize this technical context chunk ({i+1}/{len(chunks)}). "
+                f"Priority: preserve code, file paths, errors, "
+                f"and specs verbatim. Omit filler.\n\n{chunk}"
+            )
+            try:
+                msg = Message(role=Role.USER, content=prompt)
+                reply = await self.llm.chat([msg])
+                accumulated += (reply.content or "") + "\n"
+            except Exception:
+                accumulated += chunk + "\n"
+            print(f"  [compress] chunk {i+1}/{len(chunks)} done ({len(accumulated)} chars total)", flush=True)
+
+        system = f"[Compressed context]\n\n{accumulated.strip()}"
+        self.messages = [
+            Message(role=Role.SYSTEM, content=system),
+            Message(role=Role.USER, content=user_input),
+        ]
 
     def _parse_inline_tool_call(self, content: str) -> dict | None:
         lines = content.strip().splitlines()
@@ -613,6 +669,9 @@ class Agent:
         try:
             data = json.loads(json_block)
         except json.JSONDecodeError:
+            return None
+
+        if not isinstance(data, dict):
             return None
 
         func = data.get("function", {})
@@ -639,10 +698,30 @@ class Agent:
             }
         return None
 
+    def _summarize_args(self, name: str, args: dict) -> str:
+        if name in ("web_search",):
+            return f'query="{args.get("query", "")}"'
+        if name in ("web_fetch", "web_fetch_html"):
+            return f'url="{args.get("url", "")}"'
+        if name in ("read_file", "edit_file", "write_file"):
+            return f'path="{args.get("path", "")}"'
+        if name == "run_terminal":
+            cmd = args.get("command", "")
+            return f'command="{cmd[:80]}{"..." if len(cmd) > 80 else ""}"'
+        if name in ("memory_lookup", "search_code"):
+            return f'query="{args.get("query", "")}"'
+        return ""
+
     async def _execute_tool(self, tc: dict) -> ToolResult:
         name = tc.get("function", {}).get("name", "")
         args_raw = tc.get("function", {}).get("arguments", "{}")
         args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+
+        summary = self._summarize_args(name, args)
+        if summary:
+            print(f"  [tool] {name}({summary})", flush=True)
+        else:
+            print(f"  [tool] {name}", flush=True)
 
         tool_map = {
             "read_file": lambda: self.reader.read_file(args.get("path", ""), args.get("offset", 0), args.get("limit")),

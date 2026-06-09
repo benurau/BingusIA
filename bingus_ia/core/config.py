@@ -51,6 +51,7 @@ def save_config(config: AgentConfig, path: str | None = None) -> None:
         "max_turns": config.max_turns,
         "memory_enabled": config.memory_enabled,
         "injection_dir": config.injection_dir,
+        "prompt_dir": config.prompt_dir,
         "embedding_model": config.embedding_model,
     }
     with open(config_path, "w") as f:

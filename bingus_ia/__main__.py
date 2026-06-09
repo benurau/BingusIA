@@ -118,7 +118,7 @@ async def main():
         result = await agent.run(prompt)
         print(result)
     else:
-        print("Entering interactive mode. Type 'exit' to quit, '/reload' to reload injections.")
+        print("Entering interactive mode. Type 'exit' to quit, '/controls' for all commands.")
         while True:
             try:
                 prompt = input(">>> ")
@@ -128,6 +128,23 @@ async def main():
 
             if prompt.strip().lower() in ("exit", "quit"):
                 break
+            if prompt.strip() == "/controls":
+                print("  Available commands:")
+                print("    /controls             Show this help")
+                print("    /reload               Reload injections from disk")
+                print("    /injections           List all injections")
+                print("    /rule <text>          Create a new injection rule")
+                print("    /rules                List injection rules")
+                print("    /rule-delete <name>   Delete an injection rule")
+                print("    /workspace            Show current workspace")
+                print("    /workspace <path>     Change workspace directory")
+                print("    /rehearse             Scan project and create knowledge injection")
+                print("    /showprompt           Toggle full prompt display (debug)")
+                print("    /memory               List memory blocks")
+                print("    /memory <name>        Show a memory block")
+                print("    /memory <n>=<text>    Set a memory block")
+                print("    exit / quit           Exit the program")
+                continue
             if prompt.strip() == "/reload":
                 count = agent.injections.reload()
                 print(f"Reloaded {count} injections.")
@@ -174,6 +191,11 @@ async def main():
                 print("  Scanning project, searching the web, and creating knowledge injection.")
                 result = await agent.rehearse()
                 print(result)
+                continue
+
+            if prompt.strip() == "/showprompt":
+                agent.show_prompt = not agent.show_prompt
+                print(f"  Prompt display {'ON' if agent.show_prompt else 'OFF'}.")
                 continue
 
             if prompt.strip() == "/memory":

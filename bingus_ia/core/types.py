@@ -81,5 +81,6 @@ class AgentConfig:
     max_turns: int = 100
     memory_enabled: bool = True
     injection_dir: str = "injections"
+    prompt_dir: str = "prompt"
     embedding_model: str = "nomic-embed-text"
     system_prompt: str = ""
