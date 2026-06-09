@@ -28,7 +28,7 @@ You can read and edit files in the workspace. You have memory of past conversati
 Available tools: write_file, edit_file, read_file, list_dir, search_code,
 memory_lookup, memory_list, create_rule, delete_rule, memory_block_list,
 memory_block_set, memory_block_replace, web_search, web_fetch, web_fetch_html,
-read_browser, set_workspace, run_terminal. Use the function-calling interface for these.
+set_workspace, run_terminal. Use the function-calling interface for these.
 
 Rules:
 - Create new files with write_file, modify with edit_file, read with read_file.
@@ -278,18 +278,6 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
-            "name": "read_browser",
-            "description": "Get the current URL and HTML content from the built-in GUI browser. Use this when the user asks you to look at a page they have open, or to summarize the content of a website they are viewing.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "run_terminal",
             "description": "Run a shell command. Use this to compile, run, test, or debug programs. Returns stdout, stderr, and exit code. Default timeout is 30s.",
             "parameters": {
@@ -307,9 +295,8 @@ TOOL_DEFINITIONS = [
 
 
 class Agent:
-    def __init__(self, config: AgentConfig, browser_getter=None):
+    def __init__(self, config: AgentConfig):
         self.config = config
-        self.browser_getter = browser_getter
         self.llm: BaseLLMClient = create_llm_client(config)
         self.reader = FileReader(config.workspace_dir)
         self.editor = FileEditor(config.workspace_dir)
@@ -456,24 +443,6 @@ class Agent:
             return ToolResult(ToolName.RUN_TERMINAL, False, "", error=f"Command timed out after {timeout}s")
         except Exception as e:
             return ToolResult(ToolName.RUN_TERMINAL, False, "", error=str(e))
-
-    def _read_browser(self) -> ToolResult:
-        if not self.browser_getter:
-            return ToolResult(
-                ToolName.RUN_COMMAND, False, "",
-                error="No browser available. The browser panel must be open in the GUI.",
-            )
-        try:
-            content = self.browser_getter()
-            url = content.get("url", "")
-            html = content.get("html", "")
-            text = content.get("text", "")
-            summary = f"Current browser URL: {url}\n\nPage text content:\n{text[:10000]}"
-            if html:
-                summary += f"\n\nFull HTML ({len(html)} chars): use web_fetch for full content."
-            return ToolResult(ToolName.RUN_COMMAND, True, output=summary)
-        except Exception as e:
-            return ToolResult(ToolName.RUN_COMMAND, False, "", error=str(e))
 
     async def run(self, user_input: str) -> str:
         resolved_system = await self._build_system_prompt(user_input)
@@ -730,8 +699,6 @@ class Agent:
         return None
 
     def _summarize_args(self, name: str, args: dict) -> str:
-        if name in ("read_browser",):
-            return "current browser page"
         if name in ("web_search",):
             return f'query="{args.get("query", "")}"'
         if name in ("web_fetch", "web_fetch_html"):
@@ -779,7 +746,6 @@ class Agent:
             "web_search": lambda: self.web_search.search(args.get("query", ""), args.get("num_results", 5)),
             "web_fetch": lambda: self.web_search.fetch(args.get("url", "")),
             "web_fetch_html": lambda: self.web_search.fetch_html(args.get("url", "")),
-            "read_browser": lambda: self._read_browser(),
             "run_terminal": lambda: self.run_terminal(args.get("command", ""), args.get("workdir", ""), args.get("timeout", 30)),
         }
 

@@ -5,8 +5,7 @@ A self-hosted agentic AI programming assistant that connects to local or cloud L
 ## Features
 
 - **Multi-provider LLM support:** Ollama (local), OpenAI, Anthropic, OpenCode Zen
-- **Desktop GUI:** Terminal, syntax-highlighted editor, file explorer, and built-in web browser
-- **Built-in web browser:** Browse tutorials/docs alongside your code; the agent can read and summarize any open page via the `read_browser` tool
+- **Desktop GUI:** Terminal, syntax-highlighted editor, and file explorer
 - **File operations:** Read, write, edit files with diff display
 - **Code search:** ripgrep-powered code search within a workspace
 - **Web search:** DuckDuckGo search and page fetching
@@ -20,10 +19,9 @@ A self-hosted agentic AI programming assistant that connects to local or cloud L
 - **Python 3.11+** — Core language
 - **LLM providers:** Ollama (local), OpenAI, Anthropic, OpenCode Zen
 - **httpx** — Async HTTP for API calls & web fetching
-- **tkinterweb** — Embedded web browser in the GUI
 - **FastAPI / uvicorn** — Optional REST API server
 - **SQLite** — Semantic memory with embedding-based retrieval
-- **tkinter** — Desktop GUI (terminal, editor, file explorer, browser)
+- **tkinter** — Desktop GUI (terminal, editor, file explorer)
 - **DuckDuckGo Search** — Web search integration
 - **ripgrep** — Blazing-fast code search
 - **pytest** — Test framework + benchmark evaluation
