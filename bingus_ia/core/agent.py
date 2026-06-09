@@ -555,28 +555,33 @@ class Agent:
                 f"Preview (first 40 lines):\n```\n{snippet}\n```\n"
             )
 
-        ws_triggers = ("file", "code", "project", "workspace", "list", "show",
-                       "read", "edit", "write", "create", "where", "structure",
-                       "open", "find", "search", "look", "directory", "folder",
-                       "all files", "source", "path", "tree", "browse")
+        ws_phrases = ("list all files", "workspace files", "directory structure",
+                      "project files", "all files", "show tree", "file tree",
+                      "list directory", "list files", "full tree", "folder structure")
         user_lower = user_input.lower()
-        include_listing = any(t in user_lower for t in ws_triggers)
+        include_listing = any(p in user_lower for p in ws_phrases)
 
-        workspace_path = self.config.workspace_dir
-        if include_listing and workspace_path and Path(workspace_path).is_dir():
-            try:
-                all_files = []
-                for root, dirs, files in os.walk(workspace_path):
-                    dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
-                    for f in files:
-                        if f.startswith("."):
-                            continue
-                        full = os.path.join(root, f)
-                        all_files.append(os.path.relpath(full, workspace_path))
-                if all_files:
-                    system += "\n\nWorkspace files:\n" + "\n".join(f"  {f}" for f in sorted(all_files))
-            except Exception:
-                pass
+        if include_listing:
+            workspace_path = self.config.workspace_dir
+            if workspace_path and Path(workspace_path).is_dir():
+                try:
+                    all_files = []
+                    for root, dirs, files in os.walk(workspace_path):
+                        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+                        for f in files:
+                            if f.startswith("."):
+                                continue
+                            full = os.path.join(root, f)
+                            all_files.append(os.path.relpath(full, workspace_path))
+                    if all_files:
+                        total = len(all_files)
+                        shown = sorted(all_files)[:50]
+                        listing = "\n".join(f"  {f}" for f in shown)
+                        if total > 50:
+                            listing += f"\n  ... and {total - 50} more files"
+                        system += f"\n\nWorkspace ({total} files, showing first 50):\n{listing}"
+                except Exception:
+                    pass
 
         matched = self.injections.match(user_input)
         if matched:
@@ -591,12 +596,12 @@ class Agent:
                 is_valid, err = InjectionSandbox.validate(inj)
                 if is_valid:
                     rendered = InjectionSandbox.render(inj, context)
-                    injection_block = f"\n\n[Injection: {inj.name}]\n{rendered}"
+                    injection_block = f"\n\n[Injection: {inj.name}]\n{rendered[:2000]}"
 
                     if inj.urls:
                         summaries = await self.summariser.summarise_urls(inj)
                         for s in summaries:
-                            injection_block += f"\n[Web Summary: {s['url']}]\n{s['summary']}"
+                            injection_block += f"\n[Web Summary: {s['url']}]\n{s['summary'][:1000]}"
                             await self._store_memory(f"Injection URL: {s['url']}", s["summary"])
 
                     system = f"{system}{injection_block}"
@@ -626,7 +631,7 @@ class Agent:
                         try:
                             content = f.read_text(encoding="utf-8").strip()
                             if content:
-                                extras.append(f"--- {f.stem} ---\n{content}")
+                                extras.append(f"--- {f.stem} ---\n{content[:500]}")
                         except Exception:
                             pass
                     self._cached_extras = "\n\n".join(extras) if extras else ""

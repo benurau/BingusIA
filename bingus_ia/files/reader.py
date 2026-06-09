@@ -36,6 +36,10 @@ class FileReader:
                 for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
                     suffix = "/" if entry.is_dir() else ""
                     entries.append(f"{entry.name}{suffix}")
+                total = len(entries)
+                if total > 100:
+                    entries = entries[:100]
+                    entries.append(f"... and {total - 100} more entries")
             except PermissionError:
                 return ToolResult(ToolName.LIST_DIR, False, output="",
                                   error=f"Cannot list '{path}' — permission denied. Check folder permissions or close programs using it.")

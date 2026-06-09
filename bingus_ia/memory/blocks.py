@@ -5,7 +5,7 @@ import yaml
 from bingus_ia.core.types import ToolResult, ToolName
 
 MEMORY_DIR = ".bingus_memory"
-TOKEN_BUDGET = 4000
+TOKEN_BUDGET = 2000
 CHARS_PER_TOKEN = 4
 CHAR_BUDGET = TOKEN_BUDGET * CHARS_PER_TOKEN
 
