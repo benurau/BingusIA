@@ -14,6 +14,7 @@ from pathlib import Path
 from bingus_ia.core.agent import Agent
 from bingus_ia.core.config import load_config, save_config
 from bingus_ia.core.types import AgentConfig, ToolResult, ToolName
+from tkinterweb import HtmlFrame
 
 
 # ── Windows Terminal classic colors ───────────────────────────────
@@ -162,8 +163,9 @@ def _highlight_python(text: str) -> list[tuple[str, str]]:
 
 # ── AgentRunner ────────────────────────────────────────────────────
 class AgentRunner:
-    def __init__(self, config: AgentConfig):
+    def __init__(self, config: AgentConfig, browser_getter=None):
         self.config = config
+        self.browser_getter = browser_getter
         self.agent: Agent | None = None
         self.input_queue: queue.Queue = queue.Queue()
         self.output_queue: queue.Queue = queue.Queue()
@@ -183,7 +185,7 @@ class AgentRunner:
         sys.stdout = stdout_buf
         sys.stderr = stderr_buf
         try:
-            self.agent = Agent(self.config)
+            self.agent = Agent(self.config, browser_getter=self.browser_getter)
             self.output_queue.put(("ready", ""))
         except Exception as e:
             sys.stdout = old_stdout
@@ -635,6 +637,114 @@ class FileExplorer(tk.Frame):
             self.editor._open_file(full[0])
 
 
+# ── BrowserPanel ──────────────────────────────────────────────────
+class BrowserPanel(tk.Frame):
+    def __init__(self, parent: tk.Widget):
+        super().__init__(parent, bg=HEADER_BG)
+        self._current_url = ""
+        self._current_html = ""
+        self._current_text = ""
+        self._build_ui()
+
+    def _build_ui(self):
+        nav = tk.Frame(self, bg=HEADER_BG)
+        nav.pack(fill=tk.X)
+
+        btn_font = ("Segoe UI", 10)
+        nav_btn = tk.Button(nav, text="\u25C0", command=self._go_back,
+                            font=btn_font, bg=HEADER_BG, fg=TERM_FG, relief=tk.FLAT,
+                            activebackground="#333", activeforeground=TERM_FG,
+                            padx=4, pady=1, cursor="hand2")
+        nav_btn.pack(side=tk.LEFT, padx=1)
+
+        fwd_btn = tk.Button(nav, text="\u25B6", command=self._go_forward,
+                            font=btn_font, bg=HEADER_BG, fg=TERM_FG, relief=tk.FLAT,
+                            activebackground="#333", activeforeground=TERM_FG,
+                            padx=4, pady=1, cursor="hand2")
+        fwd_btn.pack(side=tk.LEFT, padx=1)
+
+        ref_btn = tk.Button(nav, text="\u21BB", command=self._refresh,
+                            font=btn_font, bg=HEADER_BG, fg=TERM_FG, relief=tk.FLAT,
+                            activebackground="#333", activeforeground=TERM_FG,
+                            padx=4, pady=1, cursor="hand2")
+        ref_btn.pack(side=tk.LEFT, padx=1)
+
+        self.url_var = tk.StringVar(value="https://www.google.com")
+        self.url_entry = tk.Entry(nav, textvariable=self.url_var,
+                                  font=("Segoe UI", 10), bg="#1e1e1e", fg=TERM_FG,
+                                  insertbackground=TERM_FG, relief=tk.FLAT,
+                                  highlightthickness=0, bd=0)
+        self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4, pady=2)
+        self.url_entry.bind("<Return>", self._navigate)
+
+        go_btn = tk.Button(nav, text="Go", command=self._navigate,
+                           font=("Segoe UI", 9), bg="#007acc", fg="white",
+                           activebackground="#005a9e", activeforeground="white",
+                           relief=tk.FLAT, padx=8, pady=1, cursor="hand2")
+        go_btn.pack(side=tk.LEFT, padx=1)
+
+        browser_frame = tk.Frame(self, bg=EDITOR_BG)
+        browser_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.browser = HtmlFrame(browser_frame)
+        self.browser.pack(fill=tk.BOTH, expand=True)
+        self.browser.load_url("https://www.google.com")
+        self._update_page_info()
+
+    def _navigate(self, event=None):
+        url = self.url_var.get().strip()
+        if not url:
+            return
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+            self.url_var.set(url)
+        self._load_url(url)
+
+    def _load_url(self, url: str):
+        try:
+            self.browser.load_url(url)
+        except Exception as e:
+            self._current_url = url
+            self._current_html = f"<html><body><p>Failed to load: {e}</p></body></html>"
+            self._current_text = f"Failed to load page: {e}"
+            return
+        self._update_page_info()
+
+    def _update_page_info(self):
+        try:
+            self._current_url = self.browser.current_url or self.url_var.get()
+            self._current_html = self.browser.html or ""
+            self._current_text = self.browser.get_page_text() or ""
+        except Exception:
+            pass
+
+    def _go_back(self):
+        try:
+            self.browser.go_back()
+            self._update_page_info()
+        except Exception:
+            pass
+
+    def _go_forward(self):
+        try:
+            self.browser.go_forward()
+            self._update_page_info()
+        except Exception:
+            pass
+
+    def _refresh(self):
+        url = self._current_url
+        if url:
+            self._load_url(url)
+
+    def get_page_content(self) -> dict:
+        return {
+            "url": self._current_url,
+            "html": self._current_html,
+            "text": self._current_text,
+        }
+
+
 # ── BingusGUI ─────────────────────────────────────────────────────
 class BingusGUI(tk.Tk):
     def __init__(self, config: AgentConfig | None = None):
@@ -664,8 +774,15 @@ class BingusGUI(tk.Tk):
                                sashrelief=tk.FLAT, sashwidth=3)
         paned.pack(fill=tk.BOTH, expand=True)
 
-        self.terminal = TerminalPanel(paned, on_submit=self._on_input)
-        paned.add(self.terminal, stretch="always", width=500)
+        left_pane = tk.PanedWindow(paned, orient=tk.VERTICAL, bg=HEADER_BG,
+                                   sashrelief=tk.FLAT, sashwidth=3)
+        paned.add(left_pane, stretch="always", width=500)
+
+        self.browser_panel = BrowserPanel(left_pane)
+        left_pane.add(self.browser_panel, stretch="always", height=350)
+
+        self.terminal = TerminalPanel(left_pane, on_submit=self._on_input)
+        left_pane.add(self.terminal, stretch="always", height=250)
 
         self.editor = EditorPanel(paned, on_file_open=self._on_file_open)
         paned.add(self.editor, stretch="always", width=550)
@@ -846,7 +963,7 @@ class BingusGUI(tk.Tk):
 
     def _init_agent_thread(self):
         try:
-            self.agent_runner = AgentRunner(self.config)
+            self.agent_runner = AgentRunner(self.config, browser_getter=self.browser_panel.get_page_content)
             self.after(0, self._on_agent_ready)
         except Exception as e:
             self.after(0, self._on_agent_error, str(e))
