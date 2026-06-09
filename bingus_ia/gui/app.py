@@ -1,4 +1,5 @@
 import asyncio
+import html as htmlmod
 import io
 import os
 import queue
@@ -7,6 +8,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import urllib.parse
 from tkinter import filedialog, messagebox, ttk
 from enum import Enum
 from pathlib import Path
@@ -645,6 +647,8 @@ class BrowserPanel(tk.Frame):
         self._current_html = ""
         self._current_text = ""
         self._loading = False
+        self._history: list[str] = []
+        self._history_pos = -1
         self._build_ui()
 
     def _build_ui(self):
@@ -697,14 +701,68 @@ class BrowserPanel(tk.Frame):
                 "<p>Enter a URL above to browse</p></body></html>")
         self.browser.load_html(html)
 
-    def _navigate(self, event=None):
-        url = self.url_var.get().strip()
-        if not url:
-            return
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-            self.url_var.set(url)
+    @staticmethod
+    def _is_url(text: str) -> bool:
+        text = text.strip()
+        if text.startswith(("http://", "https://")):
+            return True
+        if "." in text and " " not in text and not text.endswith("."):
+            return True
+        return False
+
+    def _go_to(self, url: str):
+        self.url_var.set(url)
+        self._history = self._history[:self._history_pos + 1]
+        self._history.append(url)
+        self._history_pos = len(self._history) - 1
+        self._show_loading(url)
         threading.Thread(target=self._fetch_and_load, args=(url,), daemon=True).start()
+
+    def _navigate(self, event=None):
+        raw = self.url_var.get().strip()
+        if not raw:
+            return
+        if not self._is_url(raw):
+            url = f"https://duckduckgo.com/?q={urllib.parse.quote(raw)}"
+        elif not raw.startswith(("http://", "https://")):
+            url = "https://" + raw
+        else:
+            url = raw
+        self._go_to(url)
+
+    def _show_loading(self, url: str):
+        safe = htmlmod.escape(url)
+        html = (f"<html><body style='background:#1e1e1e;color:#888;font-family:sans-serif;"
+                f"display:flex;align-items:center;justify-content:center;height:100vh'>"
+                f"<p>Loading {safe}...</p></body></html>")
+        self.browser.load_html(html)
+
+    def _sanitize_html(self, html: str, base_url: str) -> str:
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<link[^>]*>', '', html, flags=re.IGNORECASE)
+        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<iframe[^>]*>.*?</iframe>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r' on\w+\s*=\s*"[^"]*"', '', html, flags=re.IGNORECASE)
+        html = re.sub(r' on\w+\s*=\s*\'[^\']*\'', '', html, flags=re.IGNORECASE)
+
+        def make_abs(m):
+            attr = m.group(1)
+            val = m.group(2)
+            if val.startswith(("http://", "https://", "data:", "#", "javascript:")):
+                return m.group(0)
+            abs_url = urllib.parse.urljoin(base_url, val)
+            return f'{attr}="{abs_url}"'
+
+        html = re.sub(r'(src|href)="([^"]*)"', make_abs, html, flags=re.IGNORECASE)
+        html = re.sub(r"src='([^']*)'", lambda m: f"src='{urllib.parse.urljoin(base_url, m.group(1))}'" if not m.group(1).startswith(("http://", "https://", "data:", "#", "javascript:")) else m.group(0), html)
+        return html
+
+    def _extract_text(self, html: str) -> str:
+        text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:20000]
 
     def _fetch_and_load(self, url: str):
         if self._loading:
@@ -712,19 +770,20 @@ class BrowserPanel(tk.Frame):
         self._loading = True
         try:
             import httpx
-            resp = httpx.get(url, timeout=15, follow_redirects=True)
+            resp = httpx.get(url, timeout=15, follow_redirects=True, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            })
             ct = resp.headers.get("content-type", "").lower()
-            html = resp.text
             effective_url = str(resp.url)
-            if "text/html" not in ct and "application/xhtml" not in ct:
-                safe = resp.text[:5000].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                html = (f"<html><body style='background:#1e1e1e;color:#ccc;"
-                        f"font-family:monospace;padding:2em;white-space:pre-wrap'>{safe}</pre></body></html>")
-                text = resp.text[:5000]
+            if "text/html" in ct or "application/xhtml" in ct:
+                raw_html = resp.text
+                html = self._sanitize_html(raw_html, effective_url)
+                text = self._extract_text(raw_html)
             else:
-                import re
-                text = re.sub(r'<[^>]+>', '', html)
-                text = re.sub(r'\s+', ' ', text).strip()[:20000]
+                safe = resp.text[:8000].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                html = (f"<html><body style='background:#1e1e1e;color:#ccc;"
+                        f"font-family:monospace;padding:2em;white-space:pre-wrap'>{safe}</body></html>")
+                text = resp.text[:8000]
             self.after(0, self._display_page, effective_url, html, text)
         except Exception as e:
             err = (f"<html><body style='background:#1e1e1e;color:#f66;font-family:sans-serif;"
@@ -739,38 +798,39 @@ class BrowserPanel(tk.Frame):
         self._current_text = text
         self.url_var.set(url)
         try:
+            if len(html) > 500000:
+                html = html[:500000] + "\n<!-- truncated -->"
             self.browser.load_html(html)
-        except Exception:
-            pass
+        except Exception as e:
+            fallback = (f"<html><body style='background:#1e1e1e;color:#ccc;font-family:sans-serif;"
+                        f"padding:2em'><h2>Page too complex to render</h2>"
+                        f"<p>The content is available for the agent to read.</p>"
+                        f"<p><a href='{htmlmod.escape(url)}'>Open in external browser</a></p></body></html>")
+            try:
+                self.browser.load_html(fallback)
+            except Exception:
+                pass
 
     def _go_back(self):
-        try:
-            self.browser.go_back()
-            self._sync_from_browser()
-        except Exception:
-            pass
+        if self._history_pos > 0:
+            self._history_pos -= 1
+            url = self._history[self._history_pos]
+            self.url_var.set(url)
+            self._show_loading(url)
+            threading.Thread(target=self._fetch_and_load, args=(url,), daemon=True).start()
 
     def _go_forward(self):
-        try:
-            self.browser.go_forward()
-            self._sync_from_browser()
-        except Exception:
-            pass
+        if self._history_pos < len(self._history) - 1:
+            self._history_pos += 1
+            url = self._history[self._history_pos]
+            self.url_var.set(url)
+            self._show_loading(url)
+            threading.Thread(target=self._fetch_and_load, args=(url,), daemon=True).start()
 
     def _refresh(self):
         if self._current_url:
+            self._show_loading(self._current_url)
             threading.Thread(target=self._fetch_and_load, args=(self._current_url,), daemon=True).start()
-
-    def _sync_from_browser(self):
-        try:
-            url = self.browser.current_url or ""
-            if url:
-                self._current_url = url
-                self.url_var.set(url)
-                self._current_html = self.browser.html or ""
-                self._current_text = self.browser.get_page_text() or ""
-        except Exception:
-            pass
 
     def get_page_content(self) -> dict:
         if self._current_url and not self._current_html:
