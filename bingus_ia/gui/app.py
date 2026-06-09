@@ -252,19 +252,6 @@ class AgentRunner:
         except queue.Empty:
             return None
 
-    def set_workspace(self, path: str):
-        if self.agent:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._async_set_workspace(path), self._loop
-                )
-                fut.result(timeout=10)
-            except Exception:
-                pass
-
-    async def _async_set_workspace(self, path: str):
-        self.agent.set_workspace(path)
-
     def set_current_file(self, path: str | None, content: str = ""):
         if self.agent:
             self._loop.call_soon_threadsafe(
@@ -735,11 +722,6 @@ class BingusGUI(tk.Tk):
             else:
                 self.terminal.writeline(">>> (default)", "prompt")
             self._handle_setup_input(text)
-        elif text.startswith("/terminal "):
-            cmd = text[len("/terminal "):]
-            self.terminal.writeline(f"$ {cmd}", "user")
-            self.terminal.set_waiting(True)
-            threading.Thread(target=self._run_terminal_cmd, args=(cmd,), daemon=True).start()
         elif self.agent_runner:
             if text:
                 self.terminal.writeline(f">>> {text}", "user")
@@ -909,46 +891,10 @@ class BingusGUI(tk.Tk):
             self.agent_runner.set_current_file(path, content)
 
     def _on_folder_open(self, path: str):
-        if self.agent_runner:
-            try:
-                self.agent_runner.set_workspace(path)
-                self.config.workspace_dir = path
-                save_config(self.config)
-                self.terminal.writeline(f"Workspace set to: {path}", "info")
-            except Exception as e:
-                self.terminal.writeline(f"Error setting workspace: {e}", "error")
-            self.terminal.writeline("\u2500" * 40, "sep")
-
-    def _run_terminal_cmd(self, cmd: str):
-        import subprocess
-        try:
-            cwd = self.config.workspace_dir if self.config else "."
-            proc = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                cwd=cwd, timeout=60,
-            )
-            out = proc.stdout or ""
-            err = proc.stderr or ""
-            result = out
-            if proc.returncode != 0:
-                if err:
-                    result = (out + "\n" + err) if out else err
-                result += f"\n[Exit code: {proc.returncode}]"
-            elif err:
-                result = (out + "\n[stderr]\n" + err) if out else err
-            if not result.strip():
-                result = "(no output)"
-        except subprocess.TimeoutExpired:
-            result = "[Error] Command timed out after 60s"
-        except Exception as e:
-            result = f"[Error] {e}"
-        self.after(0, self._on_terminal_result, result)
-
-    def _on_terminal_result(self, result: str):
-        self.terminal.writeline(result, "agent")
+        self.config.workspace_dir = path
+        save_config(self.config)
+        self.terminal.writeline(f"Workspace set to: {path}", "info")
         self.terminal.writeline("\u2500" * 40, "sep")
-        self.terminal.set_waiting(False)
-        self.terminal.focus_input()
 
     # ── Poller ────────────────────────────────────────────────────
     def _start_poller(self):

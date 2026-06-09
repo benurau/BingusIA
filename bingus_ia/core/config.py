@@ -49,8 +49,7 @@ def save_config(config: AgentConfig, path: str | None = None) -> None:
         "api_base_url": config.api_base_url,
         "workspace_dir": config.workspace_dir,
         "max_turns": config.max_turns,
-        "injection_dir": config.injection_dir,
-        "prompt_dir": config.prompt_dir,
+
     }
     with open(config_path, "w") as f:
         json.dump(data, f, indent=2)

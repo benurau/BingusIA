@@ -130,65 +130,9 @@ async def main():
             if prompt.strip() == "/controls":
                 print("  Available commands:")
                 print("    /controls             Show this help")
-                print("    /reload               Reload injections from disk")
-                print("    /injections           List all injections")
-                print("    /rule <text>          Create a new injection rule")
-                print("    /rules                List injection rules")
-                print("    /rule-delete <name>   Delete an injection rule")
-                print("    /workspace            Show current workspace")
-                print("    /workspace <path>     Change workspace directory")
-                print("    /rehearse             Scan project and create knowledge injection")
                 print("    /showprompt           Toggle full prompt display (debug)")
                 print("    exit / quit           Exit the program")
                 continue
-            if prompt.strip() == "/reload":
-                count = agent.injections.reload()
-                print(f"Reloaded {count} injections.")
-                continue
-            if prompt.strip() == "/injections":
-                for inj in agent.injections.injections:
-                    status = "ON" if inj.enabled else "OFF"
-                    print(f"  [{status}] {inj.name} (priority={inj.priority}, trigger='{inj.trigger_phrase}')")
-                continue
-            if prompt.strip().startswith("/rule "):
-                instruction = prompt[6:]
-                words = instruction.split()
-                key_words = [w for w in words if not w.startswith(('"', "'", "-", "C:", "\\", "/")) and len(w) > 2]
-                name = " ".join(key_words[:6]) if key_words else instruction[:60]
-                if len(name) > 60:
-                    name = name[:60].rstrip()
-                result = agent.injections.create_rule(name, instruction)
-                print(f"  {result}")
-                continue
-            if prompt.strip() == "/rules":
-                rules = agent.injections.list_rules()
-                if not rules:
-                    print("  No rules defined.")
-                else:
-                    for r in rules:
-                        status = "ON" if r.enabled else "OFF"
-                        print(f"  [{status}] {r.name}")
-                continue
-            if prompt.strip().startswith("/rule-delete "):
-                name = prompt[13:].strip()
-                result = agent.injections.delete_rule(name)
-                print(f"  {result}")
-                continue
-            if prompt.strip() == "/workspace":
-                print(f"  Workspace: {agent.config.workspace_dir}")
-                continue
-            if prompt.strip().startswith("/workspace "):
-                path = prompt[11:].strip()
-                result = agent.set_workspace(path)
-                print(f"  {result.output}")
-                continue
-            if prompt.strip() == "/rehearse":
-                print("Running rehearsal...")
-                print("  Scanning project, searching the web, and creating knowledge injection.")
-                result = await agent.rehearse()
-                print(result)
-                continue
-
             if prompt.strip() == "/showprompt":
                 agent.show_prompt = not agent.show_prompt
                 print(f"  Prompt display {'ON' if agent.show_prompt else 'OFF'}.")

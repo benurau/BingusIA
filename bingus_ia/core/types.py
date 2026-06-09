@@ -14,11 +14,6 @@ class ToolName(Enum):
     READ_FILE = "read_file"
     EDIT_FILE = "edit_file"
     WRITE_FILE = "write_file"
-    RUN_COMMAND = "run_command"
-    SET_WORKSPACE = "set_workspace"
-    WEB_SEARCH = "web_search"
-    WEB_FETCH = "web_fetch"
-    RUN_TERMINAL = "run_terminal"
 
 
 class LLMProvider(Enum):
@@ -45,16 +40,6 @@ class ToolResult:
 
 
 @dataclass
-class Injection:
-    name: str
-    trigger_phrase: str
-    prompt_override: str
-    priority: int = 0
-    enabled: bool = True
-    urls: list[str] = field(default_factory=list)
-
-
-@dataclass
 class AgentConfig:
     provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
@@ -63,7 +48,5 @@ class AgentConfig:
     api_base_url: str = ""
     workspace_dir: str = "."
     max_turns: int = 10
-    injection_dir: str = "injections"
-    prompt_dir: str = "prompt"
     num_ctx: int = 8192
     system_prompt: str = ""

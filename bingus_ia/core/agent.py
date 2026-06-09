@@ -1,49 +1,33 @@
 import asyncio
 import json
-import os
 import re
 import sys
-import time
-from pathlib import Path
-from typing import Optional
 
-from bingus_ia.core.config import save_config
 from bingus_ia.core.reducer import ContextReducer
 from bingus_ia.core.types import (
-    Message, Role, ToolName, ToolResult, AgentConfig, Injection,
+    Message, Role, ToolName, ToolResult, AgentConfig,
 )
 from bingus_ia.core.working_memory import WorkingMemory
 from bingus_ia.files.reader import FileReader
 from bingus_ia.files.editor import FileEditor
-from bingus_ia.injections.registry import InjectionRegistry
-from bingus_ia.injections.sandbox import InjectionSandbox
-from bingus_ia.injections.web_summariser import WebSummariser
 from bingus_ia.llm.base import BaseLLMClient
 from bingus_ia.llm.factory import create_llm_client
-from bingus_ia.tools.web_search import WebSearch
 
-SYSTEM_PROMPT = """You are Bingus, an AI programming assistant.
+SYSTEM_PROMPT = """You are a code editor agent.  You can ONLY read and edit the file
+currently open in the GUI editor.  Do not try to access any other files.
 
-You can ONLY access the file currently open in the GUI editor.
-Do NOT try to read, write, or list files outside it.
+Each turn decide ONE action:
+  - read_file  — read lines from the open file
+  - edit_file  — replace text in the open file
+  - write_file — overwrite the open file
 
-Each turn decide ONE next action:
-  - read_file / edit_file / write_file — work on the current file
-  - web_search / web_fetch / web_fetch_html — search and read web pages
-  - run_terminal — run shell commands to compile, test, or debug
-  - create_rule / delete_rule / set_workspace — configure the assistant
-
-Use function-calling for every action.  If unsupported, output JSON:
+Use function-calling.  If unsupported, output JSON:
   {"name": "tool_name", "arguments": {...}}
 
 Rules:
-  - If a tool fails twice, explain to the user and try a different approach.
-  - For web content: web_search → pick URL → web_fetch (Markdown chunks).
-  - Always share source URLs.
+  - A file preview is shown below under "Open file in editor".
   - After each tool result it is compressed into the [Working Memory] block above.
-    Read it to recall what you discovered so far.
-  - When you have enough information, stop making tool calls and write your
-    final answer.  If the task needs code changes, produce the exact edits."""
+  - When you have enough information, stop calling tools and write your final answer."""
 
 TOOL_DEFINITIONS = [
     {
@@ -89,109 +73,6 @@ TOOL_DEFINITIONS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_rule",
-            "description": "Create a persistent rule/instruction applied to all future prompts",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Short name for the rule"},
-                    "instruction": {"type": "string", "description": "The instruction to follow on every prompt"},
-                    "trigger": {"type": "string", "description": "Optional trigger word (leave empty for always-active)"},
-                },
-                "required": ["name", "instruction"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_rule",
-            "description": "Delete a previously created rule by name",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Name of the rule to delete"},
-                },
-                "required": ["name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_workspace",
-            "description": "Change the workspace directory. File operations will be relative to this new path.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Absolute path to the new workspace directory"},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web for current information. Returns titles, URLs, and snippets.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "num_results": {"type": "integer", "description": "Number of results (default 5)"},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_fetch",
-            "description": "Extract readable content from a URL using Readability/Trafilatura, convert to Markdown, and split into ~1k-token chunks. Use after web_search to get page details.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Full URL to fetch"},
-                },
-                "required": ["url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_fetch_html",
-            "description": "Extract readable content from a URL using Readability/Trafilatura, output as structured XML (preserves tables, formatting), and split into ~1k-token chunks. Use after web_search for structured data.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Full URL to fetch"},
-                },
-                "required": ["url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_terminal",
-            "description": "Run a shell command. Use this to compile, run, test, or debug programs. Returns stdout, stderr, and exit code. Default timeout is 30s.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Shell command to execute"},
-                    "workdir": {"type": "string", "description": "Working directory (defaults to workspace)"},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)"},
-                },
-                "required": ["command"],
-            },
-        },
-    },
 ]
 
 
@@ -201,150 +82,18 @@ class Agent:
         self.llm: BaseLLMClient = create_llm_client(config)
         self.reader = FileReader(config.workspace_dir)
         self.editor = FileEditor(config.workspace_dir)
-        self.web_search = WebSearch()
-        self.injections = InjectionRegistry(config.injection_dir)
-        self.prompt_dir = Path(config.prompt_dir).resolve()
-        self._cached_extras: str = ""
-        self._cached_extras_mtime: float = 0
-        self.summariser = WebSummariser(self.llm)
         self.messages: list[Message] = []
         self.turn_count = 0
-        self._workspace_display = config.workspace_dir
         self.wm = WorkingMemory()
         self.reducer = ContextReducer(llm=self.llm)
         self.current_file_path: str | None = None
         self.current_file_content: str = ""
         self.show_prompt = False
-        self._original_context: list[Message] | None = None
         self._compress_attempts = 0
 
     def set_current_file(self, path: str | None, content: str = ""):
         self.current_file_path = path
         self.current_file_content = content
-
-    def set_workspace(self, path: str) -> ToolResult:
-        try:
-            resolved = Path(path).resolve()
-            if not resolved.is_dir():
-                resolved.mkdir(parents=True, exist_ok=True)
-            self.config.workspace_dir = str(resolved)
-            self.reader.set_workspace(str(resolved))
-            self.editor.set_workspace(str(resolved))
-            self._workspace_display = str(resolved)
-            save_config(self.config)
-            return ToolResult(
-                ToolName.SET_WORKSPACE, True,
-                f"Workspace changed to: {resolved}",
-            )
-        except PermissionError as e:
-            return ToolResult(
-                ToolName.SET_WORKSPACE, False, "",
-                error=f"Permission denied: {e}",
-            )
-        except Exception as e:
-            return ToolResult(
-                ToolName.SET_WORKSPACE, False, "",
-                error=f"Failed to set workspace: {e}",
-            )
-
-    async def rehearse(self) -> str:
-        try:
-            workspace_path = self.config.workspace_dir
-            files_list = []
-            try:
-                for root, dirs, files in os.walk(workspace_path):
-                    dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
-                    for f in files:
-                        if f.startswith("."):
-                            continue
-                        rel = os.path.relpath(os.path.join(root, f), workspace_path)
-                        files_list.append(rel)
-            except Exception:
-                pass
-
-            workspace_summary = "\n".join(sorted(files_list)[:150])
-
-            msg = Message(role=Role.USER, content=(
-                f"Analyze this project structure and tell me what type of "
-                f"project it is (e.g., game engine, web framework, CLI tool, "
-                f"data science library, etc.) in 1-3 words. Only respond with "
-                f"the project type, nothing else.\n\n{workspace_summary}"
-            ))
-            classification_reply = await self.llm.chat([msg])
-            project_type = classification_reply.content.strip()
-
-            loop = asyncio.get_running_loop()
-            search_result = await loop.run_in_executor(
-                None, self.web_search.search,
-                f"{project_type} development best practices architecture patterns", 5,
-            )
-
-            findings = f"Project identified as: {project_type}\n\n"
-            if search_result.success:
-                findings += "Web search results:\n" + search_result.output[:4000] + "\n\n"
-                urls = re.findall(r'https?://[^\s\n]+', search_result.output)
-                if urls:
-                    fetch_result = await loop.run_in_executor(None, self.web_search.fetch, urls[0])
-                    if fetch_result.success:
-                        findings += f"Details from {urls[0]}:\n{fetch_result.output[:2000]}\n\n"
-
-            summary_msg = Message(role=Role.USER, content=(
-                f"Summarize the following information about {project_type} "
-                f"development in 3-5 paragraphs. Focus on best practices, "
-                f"common patterns, architecture decisions, and conventions "
-                f"that would help an AI coding assistant be more effective "
-                f"when working on this type of project.\n\n{findings[:6000]}"
-            ))
-            summary_reply = await self.llm.chat([summary_msg])
-            summary = summary_reply.content.strip()
-
-            safe_name = f"rehearse-{project_type.lower().replace(' ', '-').replace('/', '-')[:30]}"
-            injection_text = (
-                f"Project type: {project_type}\n\n"
-                f"Rehearsal knowledge:\n{summary}\n\n"
-                f"This injection was auto-generated by /rehearse. "
-                f"It provides context about the project domain."
-            )
-            result = self.injections.create_rule(safe_name, injection_text, trigger="")
-            return (
-                f"Rehearsal complete.\n"
-                f"  Project: {project_type}\n"
-                f"  {result}\n"
-                f"  Created injection with domain knowledge to improve task performance."
-            )
-        except Exception as e:
-            return f"Rehearsal failed: {e}"
-
-    async def run_terminal(self, command: str, workdir: str = "", timeout: int = 30) -> ToolResult:
-        cwd = workdir or self.config.workspace_dir
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            out = stdout.decode(errors="replace")
-            err = stderr.decode(errors="replace")
-
-            result = out[:8000]
-            if proc.returncode != 0:
-                if err:
-                    result = result + ("\n" + err[:4000]) if result else err[:4000]
-                return ToolResult(
-                    ToolName.RUN_TERMINAL, True,
-                    output=result or "",
-                    error=f"Exit code: {proc.returncode}",
-                )
-
-            if err:
-                result = result + ("\n[stderr]\n" + err[:2000]) if result else err[:2000]
-            return ToolResult(ToolName.RUN_TERMINAL, True, output=result[:10000])
-        except asyncio.TimeoutError:
-            return ToolResult(ToolName.RUN_TERMINAL, False, "", error=f"Command timed out after {timeout}s")
-        except Exception as e:
-            return ToolResult(ToolName.RUN_TERMINAL, False, "", error=str(e))
 
     async def run(self, user_input: str) -> str:
         self.turn_count = 0
@@ -389,16 +138,11 @@ class Agent:
                         print(f"  [tool error] {result.error}", file=sys.stderr)
 
                     # Compress tool output into working memory
-                    tc_name = tc.get("function", {}).get("name", "")
-                    tool_args = tc.get("function", {}).get("arguments", {})
-                    if isinstance(tool_args, str):
-                        tool_args = json.loads(tool_args) if tool_args else {}
-                    source_url = tool_args.get("url", "") if isinstance(tool_args, dict) else ""
                     facts = await self.reducer.reduce(
                         result.output or result.error or "",
                         query=user_input,
                     )
-                    self.wm.add(source_key, facts, url=source_url)
+                    self.wm.add(source_key, facts)
 
                     # Put reduced result in messages (keep messages small)
                     reduced = "\n".join(f"  - {f}" for f in facts)
@@ -429,7 +173,6 @@ class Agent:
         system = self.config.system_prompt or SYSTEM_PROMPT
 
         if self.current_file_path:
-            filename = Path(self.current_file_path).name
             if self.current_file_content:
                 line_count = self.current_file_content.count("\n") + 1
                 lines = self.current_file_content.split("\n")[:40]
@@ -443,50 +186,8 @@ class Agent:
                 f"\n\nOpen file in editor:\n"
                 f"Path: {self.current_file_path}\n"
                 f"Lines: {line_count}\n"
-                f"Preview (first 40 lines):\n```\n{snippet}\n```\n"
+                f"Preview:\n```\n{snippet}\n```"
             )
-
-        matched = self.injections.match(user_input)
-        if matched:
-            context = {
-                "workspace_dir": self.config.workspace_dir,
-                "current_file": "",
-                "user_input": user_input,
-                "model_name": self.config.model,
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            for inj in matched:
-                is_valid, err = InjectionSandbox.validate(inj)
-                if is_valid:
-                    rendered = InjectionSandbox.render(inj, context)
-                    injection_block = f"\n\n[Injection: {inj.name}]\n{rendered[:2000]}"
-
-                    if inj.urls:
-                        summaries = await self.summariser.summarise_urls(inj)
-                        for s in summaries:
-                            injection_block += f"\n[Web Summary: {s['url']}]\n{s['summary'][:1000]}"
-
-                    system = f"{system}{injection_block}"
-                else:
-                    print(f"Injection '{inj.name}' blocked: {err}")
-
-        if self.prompt_dir.is_dir():
-            md_files = sorted(self.prompt_dir.glob("*.md"))
-            if md_files:
-                latest_mtime = max(f.stat().st_mtime for f in md_files)
-                if latest_mtime != self._cached_extras_mtime or not self._cached_extras:
-                    extras = []
-                    for f in md_files:
-                        try:
-                            content = f.read_text(encoding="utf-8").strip()
-                            if content:
-                                extras.append(f"--- {f.stem} ---\n{content[:500]}")
-                        except Exception:
-                            pass
-                    self._cached_extras = "\n\n".join(extras) if extras else ""
-                    self._cached_extras_mtime = latest_mtime
-                if self._cached_extras:
-                    system = f"{system}\n\nPrompt Extras:\n{self._cached_extras}"
 
         if wm:
             wm_text = wm.render()
@@ -591,15 +292,8 @@ class Agent:
         return None
 
     def _summarize_args(self, name: str, args: dict) -> str:
-        if name in ("web_search",):
-            return f'query="{args.get("query", "")}"'
-        if name in ("web_fetch", "web_fetch_html"):
-            return f'url="{args.get("url", "")}"'
         if name == "edit_file":
             return f'old="{args.get("old_string", "")[:40]}"'
-        if name == "run_terminal":
-            cmd = args.get("command", "")
-            return f'command="{cmd[:80]}{"..." if len(cmd) > 80 else ""}"'
         return ""
 
     async def _execute_tool(self, tc: dict) -> ToolResult:
@@ -615,7 +309,7 @@ class Agent:
 
         def _require_open_file() -> ToolResult | None:
             if not self.current_file_path:
-                return ToolResult(ToolName.RUN_COMMAND, False, "", error="No file is open in the GUI editor. Open a file first.")
+                return ToolResult(ToolName.READ_FILE, False, "", error="No file is open in the GUI editor. Open a file first.")
             return None
 
         tool_map = {
@@ -631,24 +325,11 @@ class Agent:
                 r if (r := _require_open_file()) is not None
                 else self.editor.write_file(self.current_file_path, args.get("content", ""))
             ),
-            "create_rule": lambda: ToolResult(
-                ToolName.RUN_COMMAND, True,
-                self.injections.create_rule(args.get("name", ""), args.get("instruction", ""), args.get("trigger", "")),
-            ),
-            "delete_rule": lambda: ToolResult(
-                ToolName.RUN_COMMAND, True,
-                self.injections.delete_rule(args.get("name", "")),
-            ),
-            "set_workspace": lambda: self.set_workspace(args.get("path", "")),
-            "web_search": lambda: self.web_search.search(args.get("query", ""), args.get("num_results", 5)),
-            "web_fetch": lambda: self.web_search.fetch(args.get("url", "")),
-            "web_fetch_html": lambda: self.web_search.fetch_html(args.get("url", "")),
-            "run_terminal": lambda: self.run_terminal(args.get("command", ""), args.get("workdir", ""), args.get("timeout", 30)),
         }
 
         handler = tool_map.get(name)
         if not handler:
-            return ToolResult(ToolName.RUN_COMMAND, False, "", error=f"Unknown tool: {name}")
+            return ToolResult(ToolName.READ_FILE, False, "", error=f"Unknown tool: {name}")
 
         try:
             result = handler()
@@ -679,6 +360,4 @@ class Agent:
             )
 
     async def close(self):
-        self.summariser.close()
-        self.web_search.close()
         await self.llm.close()
