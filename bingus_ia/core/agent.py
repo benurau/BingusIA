@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Optional
 
 from bingus_ia.core.config import save_config
+from bingus_ia.core.reducer import ContextReducer
 from bingus_ia.core.types import (
     Message, Role, ToolName, ToolResult, AgentConfig, Injection,
 )
+from bingus_ia.core.working_memory import WorkingMemory
 from bingus_ia.files.reader import FileReader
 from bingus_ia.files.editor import FileEditor
 from bingus_ia.injections.registry import InjectionRegistry
@@ -23,24 +25,27 @@ from bingus_ia.memory.blocks import MemoryBlocks
 from bingus_ia.tools.web_search import WebSearch
 
 SYSTEM_PROMPT = """You are Bingus, an AI programming assistant with file system access.
-You can read and edit files in the workspace. You have memory of past conversations.
 
-Available tools: write_file, edit_file, read_file, list_dir, search_code,
-memory_lookup, memory_list, create_rule, delete_rule, memory_block_list,
-memory_block_set, memory_block_replace, web_search, web_fetch, web_fetch_html,
-set_workspace, run_terminal. Use the function-calling interface for these.
+You work in short cycles.  Each turn decide ONE next action:
+  - web_search / web_fetch / web_fetch_html — search and read web pages
+  - read_file / search_code / list_dir — explore the codebase
+  - edit_file / write_file / run_terminal — modify code or run commands
+  - memory_lookup / memory_list / memory_block_* — manage persistent memory
+  - create_rule / delete_rule / set_workspace — configure the assistant
+
+Use function-calling for every action.  If unsupported, output JSON:
+  {"name": "tool_name", "arguments": {...}}
 
 Rules:
-- Create new files with write_file, modify with edit_file, read with read_file.
-- All paths must be within workspace: {{workspace_dir}}
-- If a tool fails, retry with a different approach. After 2 failures, explain to the user.
-- Past exchanges are auto-saved as memory blocks.
-- Use memory_block_set for project conventions or persona preferences.
-- For web content: web_search → pick URL → web_fetch/web_fetch_html. Content is extracted via Readability, converted to Markdown, and split into ~1k-token chunks. The assistant's answers must be based only on those chunks.
-- Always share source URLs.
-- Think step by step, read before editing.
-- Use function-calling for tools. If unsupported, output JSON:
-  {"name": "tool_name", "arguments": {...}}"""
+  - All paths must be within workspace: {{workspace_dir}}
+  - If a tool fails twice, explain to the user and try a different approach.
+  - Past exchanges are auto-saved.  Use memory_block_set for conventions.
+  - For web content: web_search → pick URL → web_fetch (Markdown chunks).
+  - Always share source URLs.  The answer must be based only on provided chunks.
+  - After each tool result it is compressed into the [Working Memory] block above.
+    Read it to recall what you discovered so far.
+  - When you have enough information, stop making tool calls and write your
+    final answer.  If the task needs code changes, produce the exact edits."""
 
 TOOL_DEFINITIONS = [
     {
@@ -305,10 +310,14 @@ class Agent:
         self.web_search = WebSearch()
         self.injections = InjectionRegistry(config.injection_dir)
         self.prompt_dir = Path(config.prompt_dir).resolve()
+        self._cached_extras: str = ""
+        self._cached_extras_mtime: float = 0
         self.summariser = WebSummariser(self.llm)
         self.messages: list[Message] = []
         self.turn_count = 0
         self._workspace_display = config.workspace_dir
+        self.wm = WorkingMemory()
+        self.reducer = ContextReducer(llm=self.llm)
         self.current_file_path: str | None = None
         self.current_file_content: str = ""
         self.show_prompt = False
@@ -445,28 +454,25 @@ class Agent:
             return ToolResult(ToolName.RUN_TERMINAL, False, "", error=str(e))
 
     async def run(self, user_input: str) -> str:
-        resolved_system = await self._build_system_prompt(user_input)
-
-        self.messages = [Message(role=Role.SYSTEM, content=resolved_system)]
-        self.messages.append(Message(role=Role.USER, content=user_input))
         self.turn_count = 0
+        max_steps = min(self.config.max_turns, 10)
 
-        while self.turn_count < self.config.max_turns:
-            self.turn_count += 1
+        for turn in range(max_steps):
+            self.turn_count = turn + 1
+
+            system = await self._build_system_prompt(user_input, self.wm)
+
+            # Turn 1: full user query.  Later turns: short prompt to avoid
+            # confusing the model with a repeated full instruction.
+            prompt = user_input if turn == 0 else "Continue the task based on the context above."
+
+            self.messages = [Message(role=Role.SYSTEM, content=system)]
+            self.messages.append(Message(role=Role.USER, content=prompt))
 
             if self.show_prompt:
-                print(f"  [prompt] --- begin turn {self.turn_count} ---", flush=True)
-                for i, m in enumerate(self.messages):
-                    role = m.role.value
-                    preview = m.content[:2000] if m.content else ""
-                    extra = ""
-                    if m.tool_calls:
-                        tcs = json.dumps([{k: v for k, v in tc.items() if k != "id"} for tc in m.tool_calls], indent=2)
-                        extra = f"\n    tool_calls={tcs}"
-                    if m.tool_call_id:
-                        extra += f"\n    tool_call_id={m.tool_call_id}"
-                    print(f"  [{i}] {role}: {preview[:300]}{'...' if len(preview) > 300 else ''}{extra}", flush=True)
-                print(f"  [prompt] --- end turn {self.turn_count} ---", flush=True)
+                print(f"  [plan] --- turn {self.turn_count}/{max_steps} ---", flush=True)
+                print(f"  [plan] working memory:\n{self.wm.render()[:500]}", flush=True)
+                print(f"  [plan] system: {len(system)} chars", flush=True)
 
             print(f"  [llm] calling {self.config.model}...", flush=True)
             reply = await self.llm.chat(
@@ -475,7 +481,6 @@ class Agent:
             )
 
             tool_calls = list(reply.tool_calls)
-
             if not tool_calls and reply.content:
                 parsed = self._parse_inline_tool_call(reply.content)
                 if parsed:
@@ -485,50 +490,69 @@ class Agent:
             if tool_calls:
                 self.messages.append(reply)
                 for tc in tool_calls:
-                    tc_id = tc.get("id", "")
+                    source_key = f"step{self.turn_count}: {tc.get('function', {}).get('name', '?')}"
                     result = await self._execute_tool(tc)
                     if not result.success and result.error:
                         print(f"  [tool error] {result.error}", file=sys.stderr)
+
+                    # Compress tool output into working memory
+                    tc_name = tc.get("function", {}).get("name", "")
+                    tool_args = tc.get("function", {}).get("arguments", {})
+                    if isinstance(tool_args, str):
+                        tool_args = json.loads(tool_args) if tool_args else {}
+                    source_url = tool_args.get("url", "") if isinstance(tool_args, dict) else ""
+                    facts = await self.reducer.reduce(
+                        result.output or result.error or "",
+                        query=user_input,
+                    )
+                    self.wm.add(source_key, facts, url=source_url)
+
+                    # Put reduced result in messages (keep messages small)
+                    reduced = "\n".join(f"  - {f}" for f in facts)
                     self.messages.append(Message(
                         role=Role.TOOL,
-                        content=result.output or result.error or "",
-                        tool_call_id=tc_id,
+                        content=f"[{tc_name}] {reduced}\n[Result end]",
+                        tool_call_id=tc.get("id", ""),
                     ))
                 continue
 
+            # LLM produced a final answer
             if reply.content:
                 self.messages.append(reply)
                 await self._store_memory(user_input, reply.content)
                 self.blocks.remember_exchange(user_input, reply.content)
                 return reply.content
 
+            # Empty response fallback — compress history
             if self._compress_attempts < 3:
                 self._compress_attempts += 1
-                print(f"  [llm] empty response — compressing context (attempt {self._compress_attempts}/3)", flush=True)
+                print(f"  [llm] empty response — compressing (attempt {self._compress_attempts}/3)", flush=True)
                 await self._compress_context(user_input)
                 continue
             print("  [llm] empty response after 3 compressions, giving up", flush=True)
             return "The model returned an empty response after multiple compression attempts."
 
-        return "Agent reached maximum turn limit."
+        return "Agent reached maximum turn limit (10)."
 
-    async def _build_system_prompt(self, user_input: str) -> str:
+    async def _build_system_prompt(self, user_input: str, wm: WorkingMemory | None = None) -> str:
         system = self.config.system_prompt or SYSTEM_PROMPT
 
         if self.current_file_path:
             filename = Path(self.current_file_path).name
-            snippet = self.current_file_content[:16000]
             if self.current_file_content:
                 line_count = self.current_file_content.count("\n") + 1
+                lines = self.current_file_content.split("\n")[:40]
+                snippet = "\n".join(lines)
+                if line_count > 40:
+                    snippet += "\n... (first 40 lines shown)"
             else:
                 line_count = 0
+                snippet = ""
             system += (
                 f"\n\nOpen file in editor:\n"
                 f"Path: {self.current_file_path}\n"
                 f"Lines: {line_count}\n"
-                f"Content:\n```\n{snippet}\n```\n"
-                f"When the user refers to 'the file' or 'line N', "
-                f"they mean this file. To see the full file, use read_file."
+                f"Preview (first 40 lines):\n```\n{snippet}\n```\n"
             )
 
         ws_triggers = ("file", "code", "project", "workspace", "list", "show",
@@ -595,16 +619,25 @@ class Agent:
         if self.prompt_dir.is_dir():
             md_files = sorted(self.prompt_dir.glob("*.md"))
             if md_files:
-                extras = []
-                for f in md_files:
-                    try:
-                        content = f.read_text(encoding="utf-8").strip()
-                        if content:
-                            extras.append(f"--- {f.stem} ---\n{content}")
-                    except Exception:
-                        pass
-                if extras:
-                    system = f"{system}\n\nPrompt Extras:\n" + "\n\n".join(extras)
+                latest_mtime = max(f.stat().st_mtime for f in md_files)
+                if latest_mtime != self._cached_extras_mtime or not self._cached_extras:
+                    extras = []
+                    for f in md_files:
+                        try:
+                            content = f.read_text(encoding="utf-8").strip()
+                            if content:
+                                extras.append(f"--- {f.stem} ---\n{content}")
+                        except Exception:
+                            pass
+                    self._cached_extras = "\n\n".join(extras) if extras else ""
+                    self._cached_extras_mtime = latest_mtime
+                if self._cached_extras:
+                    system = f"{system}\n\nPrompt Extras:\n{self._cached_extras}"
+
+        if wm:
+            wm_text = wm.render()
+            if wm_text:
+                system = f"{system}\n\n{wm_text}"
 
         return system
 

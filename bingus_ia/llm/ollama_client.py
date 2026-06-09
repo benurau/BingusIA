@@ -7,9 +7,10 @@ from bingus_ia.llm.base import BaseLLMClient, LLMError
 
 
 class OllamaClient(BaseLLMClient):
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "codellama:7b"):
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "codellama:7b", num_ctx: int = 8192):
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.num_ctx = num_ctx
         self._client = httpx.AsyncClient(timeout=120.0)
 
     def _convert_messages(self, messages: list[Message]) -> list[dict]:
@@ -47,6 +48,8 @@ class OllamaClient(BaseLLMClient):
 
         if tools:
             payload["tools"] = tools
+
+        payload["options"] = {"num_ctx": self.num_ctx}
 
         resp = await self._client.post(f"{self.base_url}/api/chat", json=payload)
 

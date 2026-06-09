@@ -12,6 +12,7 @@ def create_llm_client(config: AgentConfig) -> BaseLLMClient:
         return OllamaClient(
             base_url=config.ollama_base_url,
             model=config.model,
+            num_ctx=config.num_ctx,
         )
     elif provider == "openai":
         return OpenAIClient(
