@@ -36,7 +36,7 @@ Rules:
 - If a tool fails, retry with a different approach. After 2 failures, explain to the user.
 - Past exchanges are auto-saved as memory blocks.
 - Use memory_block_set for project conventions or persona preferences.
-- For web content: web_search → pick URL → web_fetch/web_fetch_html.
+- For web content: web_search → pick URL → web_fetch/web_fetch_html. Content is extracted via Readability, converted to Markdown, and split into ~1k-token chunks. The assistant's answers must be based only on those chunks.
 - Always share source URLs.
 - Think step by step, read before editing.
 - Use function-calling for tools. If unsupported, output JSON:
@@ -251,7 +251,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "web_fetch",
-            "description": "Fetch and extract the full text content from a URL. Use after web_search to get page details.",
+            "description": "Extract readable content from a URL using Readability/Trafilatura, convert to Markdown, and split into ~1k-token chunks. Use after web_search to get page details.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -265,7 +265,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "web_fetch_html",
-            "description": "Fetch raw HTML from a URL for detailed parsing (tables, structured data, etc.). Use after web_search.",
+            "description": "Extract readable content from a URL using Readability/Trafilatura, output as structured XML (preserves tables, formatting), and split into ~1k-token chunks. Use after web_search for structured data.",
             "parameters": {
                 "type": "object",
                 "properties": {
