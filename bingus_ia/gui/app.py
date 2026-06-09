@@ -13,7 +13,7 @@ from pathlib import Path
 
 from bingus_ia.core.agent import Agent
 from bingus_ia.core.config import load_config, save_config
-from bingus_ia.core.types import AgentConfig, ToolResult, ToolName
+from bingus_ia.core.types import AgentConfig
 
 
 # ── Windows Terminal classic colors ───────────────────────────────

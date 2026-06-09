@@ -9,9 +9,6 @@ class FileEditor:
     def __init__(self, workspace_dir: str):
         self.workspace = Path(workspace_dir).resolve()
 
-    def set_workspace(self, path: str) -> None:
-        self.workspace = Path(path).resolve()
-
     def _resolve(self, path: str) -> Path:
         p = Path(path)
         if not p.is_absolute():
@@ -90,7 +87,7 @@ class FileEditor:
             if old_string not in content:
                 return ToolResult(
                     ToolName.EDIT_FILE, False, output="",
-                    error=f"old_string not found in {path}. Use search_code first to verify content.",
+                    error=f"old_string not found in {path}. Use read_file first to verify content.",
                 )
 
             if content.count(old_string) > 1:
