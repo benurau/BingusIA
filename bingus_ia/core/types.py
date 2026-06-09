@@ -13,15 +13,9 @@ class Role(Enum):
 class ToolName(Enum):
     READ_FILE = "read_file"
     EDIT_FILE = "edit_file"
-    LIST_DIR = "list_dir"
-    SEARCH_CODE = "search_code"
-    MEMORY_LOOKUP = "memory_lookup"
-    MEMORY_STORE = "memory_store"
+    WRITE_FILE = "write_file"
     RUN_COMMAND = "run_command"
     SET_WORKSPACE = "set_workspace"
-    MEMORY_BLOCK_LIST = "memory_block_list"
-    MEMORY_BLOCK_SET = "memory_block_set"
-    MEMORY_BLOCK_REPLACE = "memory_block_replace"
     WEB_SEARCH = "web_search"
     WEB_FETCH = "web_fetch"
     RUN_TERMINAL = "run_terminal"
@@ -51,16 +45,6 @@ class ToolResult:
 
 
 @dataclass
-class MemoryEntry:
-    id: str
-    prompt: str
-    response: str
-    timestamp: float
-    embedding: list[float] | None = None
-    metadata: dict = field(default_factory=dict)
-
-
-@dataclass
 class Injection:
     name: str
     trigger_phrase: str
@@ -79,9 +63,7 @@ class AgentConfig:
     api_base_url: str = ""
     workspace_dir: str = "."
     max_turns: int = 10
-    memory_enabled: bool = True
     injection_dir: str = "injections"
     prompt_dir: str = "prompt"
-    embedding_model: str = "nomic-embed-text"
     num_ctx: int = 8192
     system_prompt: str = ""

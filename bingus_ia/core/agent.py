@@ -20,28 +20,26 @@ from bingus_ia.injections.sandbox import InjectionSandbox
 from bingus_ia.injections.web_summariser import WebSummariser
 from bingus_ia.llm.base import BaseLLMClient
 from bingus_ia.llm.factory import create_llm_client
-from bingus_ia.memory.manager import MemoryManager
-from bingus_ia.memory.blocks import MemoryBlocks
 from bingus_ia.tools.web_search import WebSearch
 
-SYSTEM_PROMPT = """You are Bingus, an AI programming assistant with file system access.
+SYSTEM_PROMPT = """You are Bingus, an AI programming assistant.
 
-You work in short cycles.  Each turn decide ONE next action:
+You can ONLY access the file currently open in the GUI editor.
+Do NOT try to read, write, or list files outside it.
+
+Each turn decide ONE next action:
+  - read_file / edit_file / write_file — work on the current file
   - web_search / web_fetch / web_fetch_html — search and read web pages
-  - read_file / search_code / list_dir — explore the codebase
-  - edit_file / write_file / run_terminal — modify code or run commands
-  - memory_lookup / memory_list / memory_block_* — manage persistent memory
+  - run_terminal — run shell commands to compile, test, or debug
   - create_rule / delete_rule / set_workspace — configure the assistant
 
 Use function-calling for every action.  If unsupported, output JSON:
   {"name": "tool_name", "arguments": {...}}
 
 Rules:
-  - All paths must be within workspace: {{workspace_dir}}
   - If a tool fails twice, explain to the user and try a different approach.
-  - Past exchanges are auto-saved.  Use memory_block_set for conventions.
   - For web content: web_search → pick URL → web_fetch (Markdown chunks).
-  - Always share source URLs.  The answer must be based only on provided chunks.
+  - Always share source URLs.
   - After each tool result it is compressed into the [Working Memory] block above.
     Read it to recall what you discovered so far.
   - When you have enough information, stop making tool calls and write your
@@ -52,15 +50,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read lines from a file",
+            "description": "Read lines from the currently open file",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path to file"},
                     "offset": {"type": "integer", "description": "Line offset"},
                     "limit": {"type": "integer", "description": "Max lines"},
                 },
-                "required": ["path"],
             },
         },
     },
@@ -68,15 +64,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Replace exact old_string with new_string in a file",
+            "description": "Replace exact old_string with new_string in the currently open file",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path to file"},
                     "old_string": {"type": "string", "description": "Exact text to replace"},
                     "new_string": {"type": "string", "description": "Replacement text"},
                 },
-                "required": ["path", "old_string", "new_string"],
+                "required": ["old_string", "new_string"],
             },
         },
     },
@@ -84,70 +79,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a file (creates/overwrites)",
+            "description": "Overwrite the currently open file with new content",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path to file"},
                     "content": {"type": "string", "description": "File content"},
                 },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_dir",
-            "description": "List directory contents",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Directory path"},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_code",
-            "description": "Search code with ripgrep regex",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Regex pattern"},
-                    "include": {"type": "string", "description": "File glob filter"},
-                },
-                "required": ["pattern"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_lookup",
-            "description": "Search past conversations by text",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Max results"},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_list",
-            "description": "Show recent conversation history",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "description": "Max entries"},
-                },
+                "required": ["content"],
             },
         },
     },
@@ -185,55 +123,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "set_workspace",
-            "description": "Change the workspace directory. All file operations will be relative to this new path.",
+            "description": "Change the workspace directory. File operations will be relative to this new path.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Absolute path to the new workspace directory"},
                 },
                 "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_block_list",
-            "description": "List all persistent memory blocks and their sizes",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_block_set",
-            "description": "Overwrite a memory block entirely. Use for user preferences, project conventions, architecture decisions.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Block name (persona, human, project, or custom)"},
-                    "content": {"type": "string", "description": "New content for the block"},
-                },
-                "required": ["name", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_block_replace",
-            "description": "Replace text inside an existing memory block",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Block name"},
-                    "old_string": {"type": "string", "description": "Exact text to replace"},
-                    "new_string": {"type": "string", "description": "Replacement text"},
-                },
-                "required": ["name", "old_string", "new_string"],
             },
         },
     },
@@ -305,8 +201,6 @@ class Agent:
         self.llm: BaseLLMClient = create_llm_client(config)
         self.reader = FileReader(config.workspace_dir)
         self.editor = FileEditor(config.workspace_dir)
-        self.memory = MemoryManager(llm=self.llm, embedding_model=config.embedding_model) if config.memory_enabled else None
-        self.blocks = MemoryBlocks(config.workspace_dir)
         self.web_search = WebSearch()
         self.injections = InjectionRegistry(config.injection_dir)
         self.prompt_dir = Path(config.prompt_dir).resolve()
@@ -336,7 +230,6 @@ class Agent:
             self.config.workspace_dir = str(resolved)
             self.reader.set_workspace(str(resolved))
             self.editor.set_workspace(str(resolved))
-            self.blocks = MemoryBlocks(str(resolved))
             self._workspace_display = str(resolved)
             save_config(self.config)
             return ToolResult(
@@ -519,8 +412,6 @@ class Agent:
             # LLM produced a final answer
             if reply.content:
                 self.messages.append(reply)
-                await self._store_memory(user_input, reply.content)
-                self.blocks.remember_exchange(user_input, reply.content)
                 return reply.content
 
             # Empty response fallback — compress history
@@ -555,34 +446,6 @@ class Agent:
                 f"Preview (first 40 lines):\n```\n{snippet}\n```\n"
             )
 
-        ws_phrases = ("list all files", "workspace files", "directory structure",
-                      "project files", "all files", "show tree", "file tree",
-                      "list directory", "list files", "full tree", "folder structure")
-        user_lower = user_input.lower()
-        include_listing = any(p in user_lower for p in ws_phrases)
-
-        if include_listing:
-            workspace_path = self.config.workspace_dir
-            if workspace_path and Path(workspace_path).is_dir():
-                try:
-                    all_files = []
-                    for root, dirs, files in os.walk(workspace_path):
-                        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
-                        for f in files:
-                            if f.startswith("."):
-                                continue
-                            full = os.path.join(root, f)
-                            all_files.append(os.path.relpath(full, workspace_path))
-                    if all_files:
-                        total = len(all_files)
-                        shown = sorted(all_files)[:50]
-                        listing = "\n".join(f"  {f}" for f in shown)
-                        if total > 50:
-                            listing += f"\n  ... and {total - 50} more files"
-                        system += f"\n\nWorkspace ({total} files, showing first 50):\n{listing}"
-                except Exception:
-                    pass
-
         matched = self.injections.match(user_input)
         if matched:
             context = {
@@ -602,24 +465,10 @@ class Agent:
                         summaries = await self.summariser.summarise_urls(inj)
                         for s in summaries:
                             injection_block += f"\n[Web Summary: {s['url']}]\n{s['summary'][:1000]}"
-                            await self._store_memory(f"Injection URL: {s['url']}", s["summary"])
 
                     system = f"{system}{injection_block}"
                 else:
                     print(f"Injection '{inj.name}' blocked: {err}")
-
-        blocks_rendered = self.blocks.render_for_prompt()
-        if blocks_rendered:
-            system = f"{system}\n\nPersistent Memory:\n{blocks_rendered}"
-
-        if self.memory:
-            memories = await self.memory.recall(user_input, limit=3)
-            if memories:
-                history = "\n".join(
-                    f"Past: {m.prompt[:100]} -> {m.response[:150]}"
-                    for m in memories
-                )
-                system = f"{system}\n\nRelevant past context:\n{history}"
 
         if self.prompt_dir.is_dir():
             md_files = sorted(self.prompt_dir.glob("*.md"))
@@ -746,13 +595,11 @@ class Agent:
             return f'query="{args.get("query", "")}"'
         if name in ("web_fetch", "web_fetch_html"):
             return f'url="{args.get("url", "")}"'
-        if name in ("read_file", "edit_file", "write_file"):
-            return f'path="{args.get("path", "")}"'
+        if name == "edit_file":
+            return f'old="{args.get("old_string", "")[:40]}"'
         if name == "run_terminal":
             cmd = args.get("command", "")
             return f'command="{cmd[:80]}{"..." if len(cmd) > 80 else ""}"'
-        if name in ("memory_lookup", "search_code"):
-            return f'query="{args.get("query", "")}"'
         return ""
 
     async def _execute_tool(self, tc: dict) -> ToolResult:
@@ -766,14 +613,24 @@ class Agent:
         else:
             print(f"  [tool] {name}", flush=True)
 
+        def _require_open_file() -> ToolResult | None:
+            if not self.current_file_path:
+                return ToolResult(ToolName.RUN_COMMAND, False, "", error="No file is open in the GUI editor. Open a file first.")
+            return None
+
         tool_map = {
-            "read_file": lambda: self.reader.read_file(args.get("path", ""), args.get("offset", 0), args.get("limit")),
-            "edit_file": lambda: self.editor.edit_file(args.get("path", ""), args.get("old_string", ""), args.get("new_string", "")),
-            "write_file": lambda: self.editor.write_file(args.get("path", ""), args.get("content", "")),
-            "list_dir": lambda: self.reader.list_dir(args.get("path", ".")),
-            "search_code": lambda: self.reader.search_code(args.get("pattern", ""), args.get("include")),
-            "memory_lookup": lambda: self.memory.lookup(args.get("query", ""), args.get("limit", 5)) if self.memory else ToolResult(ToolName.MEMORY_LOOKUP, False, "", error="Memory disabled"),
-            "memory_list": lambda: self.memory.get_recent(args.get("limit", 10)) if self.memory else ToolResult(ToolName.MEMORY_LOOKUP, False, "", error="Memory disabled"),
+            "read_file": lambda: (
+                r if (r := _require_open_file()) is not None
+                else self.reader.read_file(self.current_file_path, args.get("offset", 0), args.get("limit"))
+            ),
+            "edit_file": lambda: (
+                r if (r := _require_open_file()) is not None
+                else self.editor.edit_file(self.current_file_path, args.get("old_string", ""), args.get("new_string", ""))
+            ),
+            "write_file": lambda: (
+                r if (r := _require_open_file()) is not None
+                else self.editor.write_file(self.current_file_path, args.get("content", ""))
+            ),
             "create_rule": lambda: ToolResult(
                 ToolName.RUN_COMMAND, True,
                 self.injections.create_rule(args.get("name", ""), args.get("instruction", ""), args.get("trigger", "")),
@@ -783,9 +640,6 @@ class Agent:
                 self.injections.delete_rule(args.get("name", "")),
             ),
             "set_workspace": lambda: self.set_workspace(args.get("path", "")),
-            "memory_block_list": lambda: self.blocks.list_blocks(),
-            "memory_block_set": lambda: self.blocks.set_block(args.get("name", ""), args.get("content", "")),
-            "memory_block_replace": lambda: self.blocks.replace_in_block(args.get("name", ""), args.get("old_string", ""), args.get("new_string", "")),
             "web_search": lambda: self.web_search.search(args.get("query", ""), args.get("num_results", 5)),
             "web_fetch": lambda: self.web_search.fetch(args.get("url", "")),
             "web_fetch_html": lambda: self.web_search.fetch_html(args.get("url", "")),
@@ -823,14 +677,6 @@ class Agent:
                 False, "",
                 error=f"[Tool Error] '{name}' failed: {e}\nArgs: {json.dumps(args, default=str)[:500]}",
             )
-
-    async def _store_memory(self, prompt: str, response: str) -> None:
-        if not self.memory:
-            return
-        try:
-            await self.memory.remember(prompt, response, {"model": self.config.model})
-        except Exception:
-            pass
 
     async def close(self):
         self.summariser.close()

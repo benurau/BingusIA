@@ -73,7 +73,6 @@ async def main():
         print(f"  API Base URL: {config.api_base_url or '(default)'}")
         print(f"  API Key: {'<set>' if config.api_key else '<not set>'}")
     print(f"  Workspace: {config.workspace_dir}")
-    print(f"  Memory: {'enabled' if config.memory_enabled else 'disabled'}")
     print(f"  Max turns: {config.max_turns}")
     print()
 
@@ -140,9 +139,6 @@ async def main():
                 print("    /workspace <path>     Change workspace directory")
                 print("    /rehearse             Scan project and create knowledge injection")
                 print("    /showprompt           Toggle full prompt display (debug)")
-                print("    /memory               List memory blocks")
-                print("    /memory <name>        Show a memory block")
-                print("    /memory <n>=<text>    Set a memory block")
                 print("    exit / quit           Exit the program")
                 continue
             if prompt.strip() == "/reload":
@@ -196,25 +192,6 @@ async def main():
             if prompt.strip() == "/showprompt":
                 agent.show_prompt = not agent.show_prompt
                 print(f"  Prompt display {'ON' if agent.show_prompt else 'OFF'}.")
-                continue
-
-            if prompt.strip() == "/memory":
-                print(agent.blocks.list_blocks().output)
-                continue
-            if prompt.strip().startswith("/memory "):
-                rest = prompt[8:].strip()
-                if "=" in rest:
-                    name, _, content = rest.partition("=")
-                    name = name.strip()
-                    content = content.strip()
-                    result = agent.blocks.set_block(name, content)
-                    print(f"  {result.output}")
-                else:
-                    content = agent.blocks.get_block(rest)
-                    if content:
-                        print(f"  [{rest}]\n{content}")
-                    else:
-                        print(f"  Block '{rest}' not found.")
                 continue
 
             result = await agent.run(prompt)

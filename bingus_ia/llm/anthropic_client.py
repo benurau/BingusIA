@@ -144,10 +144,7 @@ class AnthropicClient(BaseLLMClient):
                         yield content
 
     async def embed(self, text: str, model: str | None = None) -> list[float]:
-        raise LLMError(
-            "Anthropic does not support embeddings. "
-            "Use a different provider for embeddings, or set memory_enabled=false."
-        )
+        raise LLMError("Anthropic does not support embeddings.")
 
     async def list_models(self) -> list[dict]:
         resp = await self._client.get(

@@ -54,14 +54,6 @@ if FASTAPI_AVAILABLE:
     async def health():
         return {"status": "ok", "model": get_agent().config.model}
 
-    @app.get("/memory/search")
-    async def memory_search(query: str, limit: int = 5):
-        agent = get_agent()
-        if not agent.memory:
-            raise HTTPException(status_code=400, detail="Memory disabled")
-        entries = await agent.memory.recall(query, limit)
-        return {"results": [{"prompt": e.prompt, "response": e.response[:200], "timestamp": e.timestamp} for e in entries]}
-
     @app.post("/injections/reload")
     async def reload_injections():
         agent = get_agent()
