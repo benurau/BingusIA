@@ -708,9 +708,14 @@ class Agent:
             return None
 
         func = data.get("function", {})
-        name = data.get("name") or func.get("name", "")
+        name = (
+            data.get("name")
+            or data.get("tool_name")
+            or func.get("name", "")
+        )
         raw_args = (
             data.get("arguments")
+            or data.get("params")
             or data.get("parameters")
             or func.get("arguments")
             or func.get("parameters")
