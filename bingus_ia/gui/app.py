@@ -644,6 +644,7 @@ class BrowserPanel(tk.Frame):
         self._current_url = ""
         self._current_html = ""
         self._current_text = ""
+        self._loading = False
         self._build_ui()
 
     def _build_ui(self):
@@ -651,17 +652,17 @@ class BrowserPanel(tk.Frame):
         nav.pack(fill=tk.X)
 
         btn_font = ("Segoe UI", 10)
-        nav_btn = tk.Button(nav, text="\u25C0", command=self._go_back,
-                            font=btn_font, bg=HEADER_BG, fg=TERM_FG, relief=tk.FLAT,
-                            activebackground="#333", activeforeground=TERM_FG,
-                            padx=4, pady=1, cursor="hand2")
-        nav_btn.pack(side=tk.LEFT, padx=1)
+        self.back_btn = tk.Button(nav, text="\u25C0", command=self._go_back,
+                                  font=btn_font, bg=HEADER_BG, fg=TERM_FG, relief=tk.FLAT,
+                                  activebackground="#333", activeforeground=TERM_FG,
+                                  padx=4, pady=1, cursor="hand2")
+        self.back_btn.pack(side=tk.LEFT, padx=1)
 
-        fwd_btn = tk.Button(nav, text="\u25B6", command=self._go_forward,
-                            font=btn_font, bg=HEADER_BG, fg=TERM_FG, relief=tk.FLAT,
-                            activebackground="#333", activeforeground=TERM_FG,
-                            padx=4, pady=1, cursor="hand2")
-        fwd_btn.pack(side=tk.LEFT, padx=1)
+        self.fwd_btn = tk.Button(nav, text="\u25B6", command=self._go_forward,
+                                 font=btn_font, bg=HEADER_BG, fg=TERM_FG, relief=tk.FLAT,
+                                 activebackground="#333", activeforeground=TERM_FG,
+                                 padx=4, pady=1, cursor="hand2")
+        self.fwd_btn.pack(side=tk.LEFT, padx=1)
 
         ref_btn = tk.Button(nav, text="\u21BB", command=self._refresh,
                             font=btn_font, bg=HEADER_BG, fg=TERM_FG, relief=tk.FLAT,
@@ -669,7 +670,7 @@ class BrowserPanel(tk.Frame):
                             padx=4, pady=1, cursor="hand2")
         ref_btn.pack(side=tk.LEFT, padx=1)
 
-        self.url_var = tk.StringVar(value="https://www.google.com")
+        self.url_var = tk.StringVar()
         self.url_entry = tk.Entry(nav, textvariable=self.url_var,
                                   font=("Segoe UI", 10), bg="#1e1e1e", fg=TERM_FG,
                                   insertbackground=TERM_FG, relief=tk.FLAT,
@@ -688,8 +689,13 @@ class BrowserPanel(tk.Frame):
 
         self.browser = HtmlFrame(browser_frame)
         self.browser.pack(fill=tk.BOTH, expand=True)
-        self.browser.load_url("https://www.google.com")
-        self._update_page_info()
+        self._show_blank()
+
+    def _show_blank(self):
+        html = ("<html><body style='background:#1e1e1e;color:#888;font-family:sans-serif;"
+                "display:flex;align-items:center;justify-content:center;height:100vh'>"
+                "<p>Enter a URL above to browse</p></body></html>")
+        self.browser.load_html(html)
 
     def _navigate(self, event=None):
         url = self.url_var.get().strip()
@@ -698,46 +704,81 @@ class BrowserPanel(tk.Frame):
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
             self.url_var.set(url)
-        self._load_url(url)
+        threading.Thread(target=self._fetch_and_load, args=(url,), daemon=True).start()
 
-    def _load_url(self, url: str):
-        try:
-            self.browser.load_url(url)
-        except Exception as e:
-            self._current_url = url
-            self._current_html = f"<html><body><p>Failed to load: {e}</p></body></html>"
-            self._current_text = f"Failed to load page: {e}"
+    def _fetch_and_load(self, url: str):
+        if self._loading:
             return
-        self._update_page_info()
-
-    def _update_page_info(self):
+        self._loading = True
         try:
-            self._current_url = self.browser.current_url or self.url_var.get()
-            self._current_html = self.browser.html or ""
-            self._current_text = self.browser.get_page_text() or ""
+            import httpx
+            resp = httpx.get(url, timeout=15, follow_redirects=True)
+            ct = resp.headers.get("content-type", "").lower()
+            html = resp.text
+            effective_url = str(resp.url)
+            if "text/html" not in ct and "application/xhtml" not in ct:
+                safe = resp.text[:5000].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                html = (f"<html><body style='background:#1e1e1e;color:#ccc;"
+                        f"font-family:monospace;padding:2em;white-space:pre-wrap'>{safe}</pre></body></html>")
+                text = resp.text[:5000]
+            else:
+                import re
+                text = re.sub(r'<[^>]+>', '', html)
+                text = re.sub(r'\s+', ' ', text).strip()[:20000]
+            self.after(0, self._display_page, effective_url, html, text)
+        except Exception as e:
+            err = (f"<html><body style='background:#1e1e1e;color:#f66;font-family:sans-serif;"
+                   f"padding:2em'><h2>Failed to load</h2><p>{e}</p></body></html>")
+            self.after(0, self._display_page, url, err, f"Failed to load: {e}")
+        finally:
+            self._loading = False
+
+    def _display_page(self, url: str, html: str, text: str):
+        self._current_url = url
+        self._current_html = html
+        self._current_text = text
+        self.url_var.set(url)
+        try:
+            self.browser.load_html(html)
         except Exception:
             pass
 
     def _go_back(self):
         try:
             self.browser.go_back()
-            self._update_page_info()
+            self._sync_from_browser()
         except Exception:
             pass
 
     def _go_forward(self):
         try:
             self.browser.go_forward()
-            self._update_page_info()
+            self._sync_from_browser()
         except Exception:
             pass
 
     def _refresh(self):
-        url = self._current_url
-        if url:
-            self._load_url(url)
+        if self._current_url:
+            threading.Thread(target=self._fetch_and_load, args=(self._current_url,), daemon=True).start()
+
+    def _sync_from_browser(self):
+        try:
+            url = self.browser.current_url or ""
+            if url:
+                self._current_url = url
+                self.url_var.set(url)
+                self._current_html = self.browser.html or ""
+                self._current_text = self.browser.get_page_text() or ""
+        except Exception:
+            pass
 
     def get_page_content(self) -> dict:
+        if self._current_url and not self._current_html:
+            try:
+                self._current_html = self.browser.html or ""
+                self._current_text = self.browser.get_page_text() or ""
+            except Exception:
+                pass
         return {
             "url": self._current_url,
             "html": self._current_html,
