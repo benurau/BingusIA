@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 from bingus_ia.core.types import ToolResult, ToolName
@@ -117,6 +118,75 @@ class FileEditor:
             return ToolResult(ToolName.EDIT_FILE, False, output="", error=str(e))
         except Exception as e:
             return ToolResult(ToolName.EDIT_FILE, False, output="", error=f"Error editing '{path}': {e}")
+
+    def apply_patch(self, path: str, diff_text: str) -> ToolResult:
+        target = self._resolve(path)
+        if not target.is_file():
+            return ToolResult(ToolName.EDIT_FILE, False, output="", error=f"File not found: {path}")
+
+        try:
+            old = target.read_text(encoding="utf-8")
+        except PermissionError:
+            return ToolResult(ToolName.EDIT_FILE, False, output="",
+                              error=f"Cannot read '{self._rel(target)}' — permission denied.")
+
+        new_text = self._apply_unified_diff(old, diff_text)
+        if new_text is None:
+            return ToolResult(ToolName.EDIT_FILE, False, output="",
+                              error="Failed to apply unified diff. Check diff format.")
+
+        write_err = self._check_writable(target)
+        if write_err:
+            return ToolResult(ToolName.EDIT_FILE, False, output="", error=write_err)
+
+        try:
+            target.write_text(new_text, encoding="utf-8")
+        except PermissionError:
+            return ToolResult(ToolName.EDIT_FILE, False, output="",
+                              error=f"Cannot write to '{self._rel(target)}' — permission denied.")
+        except OSError as e:
+            return ToolResult(ToolName.EDIT_FILE, False, output="",
+                              error=f"Cannot write to '{self._rel(target)}': {e}")
+
+        rp = self._rel(target)
+        print_diff(old, new_text, rp)
+        return ToolResult(
+            ToolName.EDIT_FILE, True,
+            output=f"Applied patch to {rp} ({len(new_text)} chars)",
+        )
+
+    def _apply_unified_diff(self, old_text: str, diff_text: str) -> str | None:
+        import difflib
+        old_lines = old_text.splitlines(keepends=True)
+        hunks = self._parse_diff(diff_text)
+        if hunks is None:
+            return None
+        result = list(old_lines)
+        for start, end, new_lines in sorted(hunks, key=lambda x: -x[0]):
+            result[start:end] = [l + "\n" if not l.endswith("\n") else l for l in new_lines]
+        return "".join(result)
+
+    def _parse_diff(self, diff_text: str) -> list[tuple[int, int, list[str]]] | None:
+        hunks: list[tuple[int, int, list[str]]] = []
+        for block in re.split(r"(?=^@@ )", diff_text.strip(), flags=re.MULTILINE):
+            block = block.strip()
+            if not block or block.startswith("---") or block.startswith("+++"):
+                continue
+            m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", block)
+            if not m:
+                continue
+            old_start = int(m.group(1))
+            old_count = int(m.group(2)) if m.group(2) else 1
+            old_end = old_start + old_count - 1
+            body_start = m.end()
+            new_lines: list[str] = []
+            for line in block[body_start:].splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    new_lines.append(line[1:])
+                elif line.startswith(" ") or line.startswith("\n"):
+                    new_lines.append(line[1:] if line.startswith(" ") else line)
+            hunks.append((old_start - 1, old_end, new_lines))
+        return hunks if hunks else None
 
     def write_file(self, path: str, content: str) -> ToolResult:
         try:
