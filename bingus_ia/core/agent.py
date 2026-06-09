@@ -39,20 +39,19 @@ class Agent:
             return "No file is open in the GUI editor. Open a file first."
 
         system = self._build_system_prompt(user_input)
-        if self.show_prompt:
-            print(f"  [plan] system: {len(system)} chars", flush=True)
+        print(f"  [prompt]\n{system}\n  [/prompt]", flush=True)
 
         messages = [
             Message(role=Role.SYSTEM, content=system),
             Message(role=Role.USER, content=user_input),
         ]
 
-        print(f"  [llm] calling {self.config.model}...", flush=True)
+        print(f"  [llm] {self.config.model}...", flush=True)
         for attempt in range(3):
             reply = await self.llm.chat(messages=messages)
             content = reply.content or ""
             if self.show_prompt:
-                print(f"  [llm] reply ({len(content)} chars)", flush=True)
+                print(f"  [llm] reply:\n{content}\n  [/llm]", flush=True)
 
             diff = self._extract_diff(content)
             if diff is None:

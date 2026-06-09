@@ -24,7 +24,7 @@ class RegionLocator:
         try:
             tree = ast.parse(source)
         except SyntaxError:
-            return None
+            return self._locate_fallback(source, query)
 
         candidates: list[tuple[int, ast.AST, str]] = []
         query_lower = query.lower()
@@ -196,6 +196,49 @@ class RegionLocator:
             target_type="insertion point",
             context_start=context_start,
             context_end=last,
+            deps=[],
+        )
+
+    def _locate_fallback(self, source: str, query: str) -> CodeRegion | None:
+        lines = source.splitlines()
+        if not lines:
+            return None
+        line_count = len(lines)
+
+        keywords = [kw for kw in re.findall(r"[a-zA-Z_]\w*", query) if len(kw) >= 3]
+
+        scored: list[tuple[int, int]] = []
+        for i, line in enumerate(lines):
+            score = 0
+            found: set[str] = set()
+            for kw in keywords:
+                if kw.lower() in line.lower():
+                    found.add(kw.lower())
+                    score += len(kw)
+            dedup = len(found) * 10
+            total = score + dedup
+            if total > 0:
+                scored.append((total, i))
+
+        if not scored:
+            return self._whole_file(line_count)
+
+        scored.sort(key=lambda x: -x[0])
+        best_line = scored[0][1]
+
+        target_start = best_line + 1
+        target_end = min(line_count, best_line + 11)
+
+        context_start = max(1, best_line + 1 - 30)
+        context_end = min(line_count, best_line + 1 + 50)
+
+        return CodeRegion(
+            start_line=target_start,
+            end_line=target_end,
+            target_name=lines[best_line].strip()[:40],
+            target_type="(keyword match)",
+            context_start=context_start,
+            context_end=context_end,
             deps=[],
         )
 
